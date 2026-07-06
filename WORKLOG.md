@@ -258,13 +258,14 @@ root-level programs to confirm nothing broke in the move.
 Removed all comments from every source file, including the trailing
 `// namespace x` markers on closing braces.
 
-## 5. CURRENT GAME PLAYED
+## 5. CURRENT MODEL DESCRIPTION (at the time of section 4)
 
-The engine is fully deterministic (fixed-depth alpha-beta, no
-randomness), so `engine_selfplay` always produces this same game right
-now. Recorded here as a snapshot of current playing strength; this
-section should be replaced whenever the engine changes enough to
-produce a different game.
+The engine at this point was the MVP from section 3: material +
+center-bonus evaluation, plain minimax with alpha-beta, no
+transposition table, no quiescence search. It was fully deterministic
+(fixed-depth alpha-beta, no randomness), so `engine_selfplay` always
+produced the same game below every time it was run at that stage.
+Recorded here as a snapshot of that model's playing strength.
 
 ```
 [Event "Self-play"]
@@ -290,3 +291,84 @@ Ends in a draw by repetition around move 46: after trading down to
 rook + bishop/knight + pawns each side, White's rook shuffles Black's
 rook into a repeated check sequence (`Rd2+`/`Rd1+` vs. `Kg2`/`Kg1`)
 that neither side can break out of at this search depth.
+
+## 6. Reproduced state-of-the-art classical engine techniques
+
+Goal: before attempting anything novel, see how strong we could get by
+faithfully reproducing the classical recipe surveyed in section 2 —
+not to beat top engines, just to find our own ceiling with this
+approach.
+
+Archived the old MVP engine (material + center-bonus eval, plain
+minimax/alpha-beta) into `engine/old_engine/` under its own
+`old_engine::` namespace; confirmed it still compiles and runs
+standalone, kept purely as a historical reference point.
+
+Extended the core rules engine (`chess/board.h/.cpp`) with what a real
+search needs: a public Zobrist hash accessor, a proper side-to-move
+hash component (fixing a latent gap where two positions differing only
+in whose turn it was could hash identically), null-move support
+(`makeNullMove`/`unmakeNullMove`), and FEN export (`toFen()`). Full
+existing test suite (perft, castling, en passant, promotions,
+checkmate/stalemate/draws) still passes unchanged after all of this.
+
+Built a new evaluation (`engine/evaluation.cpp`): tapered piece-square
+tables (the well-known "PeSTO"-style midgame/endgame tables) plus
+material, interpolated by a computed game phase, replacing the old
+flat material+center-bonus heuristic.
+
+Built a new search (`engine/search.cpp`): a `Searcher` class with a
+transposition table, iterative deepening under a time budget,
+quiescence search (including proper check-evasion handling so it
+doesn't misjudge being mated at the search horizon), null-move
+pruning, late move reductions, aspiration windows, and layered move
+ordering (transposition-table move, then MVV-LVA captures, then killer
+moves, then history heuristic).
+
+Verified correctness and play quality directly, without adding any
+scoring/rating infrastructure to the repo: confirmed the search
+respects its time budget correctly across a range of budgets (100ms to
+3000ms); hand-built tactical test positions confirmed the engine finds
+forced mates (fool's-mate pattern, a back-rank mate-in-1) and avoids
+obvious blunders (takes free hanging material, moves an attacked queen
+to safety); ran full self-play games end-to-end with no crashes.
+
+Added `play.html` at the repo root: an in-browser way to play against
+the engine, with color selection, all four promotion-piece choices,
+and a reset button. This is a from-scratch JavaScript reimplementation
+of the same rules logic and evaluation tables, not a compiled copy of
+the C++ engine — compiling the real engine to WebAssembly would need
+installing a large toolchain (LLVM/clang/Node via emscripten), which
+was judged too risky given limited local disk space. Verified the JS
+implementation independently: it reproduces the exact same perft
+counts as the C++ engine through depth 4, finds fool's mate, and
+completes multi-ply self-play games without errors.
+
+The new engine is fully deterministic given a time budget only in the
+sense that it always tries to use the full budget, but which moves it
+finds within that budget can vary run to run depending on machine load
+(the time cutoff can land mid-iteration), so `engine_selfplay` no
+longer reliably reproduces the exact same game every run. The game
+below is one representative run.
+
+```
+[Event "Self-play"]
+[Site "?"]
+[Date "2026.7.6"]
+[Round "1"]
+[White "SimpleEngine"]
+[Black "SimpleEngine"]
+[Result "0-1"]
+
+1. Nf3 d5 2. d4 Nf6 3. e3 g6 4. Nc3 Bg7 5. Bb5+ c6 6. Bd3 Be6 7. O-O
+O-O 8. e4 dxe4 9. Nxe4 Nxe4 10. Bxe4 Nd7 11. Ng5 Bd5 12. Bxd5 cxd5
+13. Be3 e5 14. dxe5 Nxe5 15. c3 Nc4 16. Qg4 h6 17. Nf3 Nxe3 18. fxe3
+Qb6 19. Rf2 Rae8 20. Rd1 Rxe3 21. Rxd5 Rfe8 22. Nd4 Re1+ 23. Rf1 Qxb2
+24. Qd7 Rxf1+ 25. Kxf1 Qc1+ 26. Kf2 Qe3+ 27. Kf1 Qe1# 0-1
+```
+
+A real, recognizable opening (Nf3/d4/Nc3 into a King's-Indian-style
+setup), a genuine tactical middlegame with piece trades starting move
+8, and a real forced mating sequence finishing with `Qe1#` — a
+substantial step up from section 5's old MVP engine, which only ever
+shuffled into a repetition draw.

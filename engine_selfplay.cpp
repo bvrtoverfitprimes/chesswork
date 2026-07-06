@@ -11,7 +11,8 @@
 
 namespace {
 
-constexpr int kSearchDepth = 4;
+constexpr int kSearchDepth = 64;
+constexpr int kSearchTimeMs = 1000;
 constexpr int kMaxPlies = 300;
 
 char pieceLetter(char pieceLower) {
@@ -106,6 +107,7 @@ std::string currentDateForPgn() {
 
 int main() {
     chess::Game game;
+    engine::Searcher searcher;
     std::vector<std::string> sanMoves;
     std::string result = "*";
 
@@ -125,7 +127,7 @@ int main() {
             break;
         }
 
-        auto best = engine::findBestMove(game, kSearchDepth);
+        auto best = searcher.findBestMove(game, kSearchDepth, kSearchTimeMs);
         std::string san = sanForMove(game, best.uci, legal);
         sanMoves.push_back(san);
 

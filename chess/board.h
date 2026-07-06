@@ -44,10 +44,18 @@ public:
     UndoMove makeMove(Pos from, Pos to, char promotion = 'q');
     void unmakeMove(const UndoMove& undo);
 
+    struct NullUndo {
+        std::optional<Pos> prevEnPassant;
+        uint64_t prevHash;
+    };
+    NullUndo makeNullMove();
+    void unmakeNullMove(const NullUndo& undo);
+
     std::vector<std::string> getValidMovesUci();
 
     Color turn() const { return turn_; }
     const BoardArray& boardArray() const { return board_; }
+    uint64_t zobristHash() const { return zobristHash_; }
     bool inCheck() const;
     bool isCheckmate();
     bool isStalemate();
@@ -57,6 +65,7 @@ public:
 
     static Pos parseSquare(const std::string& s);
     static std::string squareToStr(Pos p);
+    std::string toFen() const;
 
 private:
     BoardArray board_;
@@ -66,6 +75,7 @@ private:
     int halfMoves_ = 0;
 
     std::array<std::array<uint64_t, 13>, 64> zobristTable_;
+    uint64_t zobristBlackToMoveKey_ = 0;
     uint64_t zobristHash_ = 0;
     std::map<uint64_t, int> repetitionTable_;
 

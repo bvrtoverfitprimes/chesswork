@@ -6,7 +6,8 @@
 
 namespace {
 
-constexpr int kSearchDepth = 4;
+constexpr int kSearchDepth = 64;
+constexpr int kSearchTimeMs = 2000;
 
 bool isGameOver(chess::Game& game) {
     if (game.isFiftyMoveDraw()) {
@@ -43,6 +44,7 @@ int main() {
                                    : chess::Color::White;
 
     chess::Game game;
+    engine::Searcher searcher;
     game.printBoard();
 
     while (!isGameOver(game)) {
@@ -62,7 +64,7 @@ int main() {
             char promo = (moveInput.size() == 5) ? moveInput[4] : 'q';
             game.makeMove(from, to, promo);
         } else {
-            auto result = engine::findBestMove(game, kSearchDepth);
+            auto result = searcher.findBestMove(game, kSearchDepth, kSearchTimeMs);
             std::cout << "\nEngine plays: " << result.uci << "\n";
             chess::Pos from = chess::Game::parseSquare(result.uci.substr(0, 2));
             chess::Pos to = chess::Game::parseSquare(result.uci.substr(2, 2));

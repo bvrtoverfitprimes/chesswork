@@ -97,6 +97,7 @@ void Game::initZobrist() {
     for (auto& row : zobristTable_)
         for (auto& v : row)
             v = rng();
+    zobristBlackToMoveKey_ = rng();
 
     uint64_t h = 0;
     for (int r = 0; r < 8; r++) {
@@ -107,6 +108,7 @@ void Game::initZobrist() {
             }
         }
     }
+    if (turn_ == Color::Black) h ^= zobristBlackToMoveKey_;
     zobristHash_ = h;
 }
 
@@ -128,6 +130,41 @@ Pos Game::parseSquare(const std::string& s) {
     int file = s[0] - 'a';
     int rank = s[1] - '0';
     return {8 - rank, file};
+}
+
+std::string Game::toFen() const {
+    std::ostringstream oss;
+    for (int r = 0; r < 8; r++) {
+        int empty = 0;
+        for (int c = 0; c < 8; c++) {
+            char p = board_[r][c];
+            if (p == ' ') {
+                empty++;
+            } else {
+                if (empty > 0) {
+                    oss << empty;
+                    empty = 0;
+                }
+                oss << p;
+            }
+        }
+        if (empty > 0) oss << empty;
+        if (r != 7) oss << '/';
+    }
+
+    oss << ' ' << (turn_ == Color::White ? 'w' : 'b') << ' ';
+
+    std::string castling;
+    if (castlingRights_[0]) castling += 'K';
+    if (castlingRights_[1]) castling += 'Q';
+    if (castlingRights_[2]) castling += 'k';
+    if (castlingRights_[3]) castling += 'q';
+    oss << (castling.empty() ? "-" : castling) << ' ';
+
+    oss << (enPassantTarget_.has_value() ? squareToStr(*enPassantTarget_) : "-");
+    oss << ' ' << halfMoves_ << " 1";
+
+    return oss.str();
 }
 
 std::string Game::squareToStr(Pos p) {
@@ -254,6 +291,7 @@ UndoMove Game::makeMove(Pos from, Pos to, char promotion) {
     }
 
     turn_ = (turn_ == Color::White) ? Color::Black : Color::White;
+    zobristHash_ ^= zobristBlackToMoveKey_;
 
     if (repetitionTable_.count(zobristHash_)) repetitionTable_[zobristHash_]++;
     else repetitionTable_[zobristHash_] = 1;
@@ -289,6 +327,20 @@ void Game::unmakeMove(const UndoMove& undo) {
     enPassantTarget_ = undo.prevEnPassant;
     zobristHash_ = undo.prevHash;
     halfMoves_ = undo.prevHalfMoves;
+}
+
+Game::NullUndo Game::makeNullMove() {
+    NullUndo undo{enPassantTarget_, zobristHash_};
+    enPassantTarget_.reset();
+    turn_ = (turn_ == Color::White) ? Color::Black : Color::White;
+    zobristHash_ ^= zobristBlackToMoveKey_;
+    return undo;
+}
+
+void Game::unmakeNullMove(const NullUndo& undo) {
+    turn_ = (turn_ == Color::White) ? Color::Black : Color::White;
+    enPassantTarget_ = undo.prevEnPassant;
+    zobristHash_ = undo.prevHash;
 }
 
 std::vector<std::string> Game::getValidMovesUci() {
