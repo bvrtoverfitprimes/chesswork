@@ -1,0 +1,5 @@
+selfplay.pgn
+engine_gameplay
+engine_selfplay
+tests/test_chess
+tests/simple_demo

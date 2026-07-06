@@ -2,6 +2,7 @@
 #include <cctype>
 #include <chrono>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 
@@ -134,19 +135,28 @@ int main() {
         game.makeMove(from, to, promo);
     }
 
-    std::cout << "[Event \"Self-play\"]\n";
-    std::cout << "[Site \"?\"]\n";
-    std::cout << "[Date \"" << currentDateForPgn() << "\"]\n";
-    std::cout << "[Round \"1\"]\n";
-    std::cout << "[White \"SimpleEngine\"]\n";
-    std::cout << "[Black \"SimpleEngine\"]\n";
-    std::cout << "[Result \"" << result << "\"]\n\n";
+    std::ostringstream pgn;
+    pgn << "[Event \"Self-play\"]\n";
+    pgn << "[Site \"?\"]\n";
+    pgn << "[Date \"" << currentDateForPgn() << "\"]\n";
+    pgn << "[Round \"1\"]\n";
+    pgn << "[White \"SimpleEngine\"]\n";
+    pgn << "[Black \"SimpleEngine\"]\n";
+    pgn << "[Result \"" << result << "\"]\n\n";
 
     for (size_t i = 0; i < sanMoves.size(); i++) {
-        if (i % 2 == 0) std::cout << (i / 2 + 1) << ". ";
-        std::cout << sanMoves[i] << " ";
+        if (i % 2 == 0) pgn << (i / 2 + 1) << ". ";
+        pgn << sanMoves[i] << " ";
     }
-    std::cout << result << "\n";
+    pgn << result << "\n";
+
+    const std::string outPath = "selfplay.pgn";
+    std::ofstream outFile(outPath);
+    outFile << pgn.str();
+    outFile.close();
+
+    std::cout << pgn.str();
+    std::cout << "\nSaved to " << outPath << "\n";
 
     return 0;
 }
