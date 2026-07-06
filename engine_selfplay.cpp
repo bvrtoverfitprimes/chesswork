@@ -7,13 +7,15 @@
 #include <sstream>
 
 #include "chess/board.h"
-#include "engine/search.h"
+#include "engine/human_limit/network.h"
+#include "engine/human_limit/search.h"
 
 namespace {
 
 constexpr int kSearchDepth = 64;
 constexpr int kSearchTimeMs = 1000;
 constexpr int kMaxPlies = 300;
+constexpr const char* kWeightsPath = "engine/human_limit/weights.txt";
 
 char pieceLetter(char pieceLower) {
     switch (pieceLower) {
@@ -106,8 +108,14 @@ std::string currentDateForPgn() {
 }
 
 int main() {
+    human_limit::Network net;
+    if (!net.load(kWeightsPath)) {
+        std::cout << "Warning: no trained weights found at " << kWeightsPath
+                  << ", playing with an untrained network.\n";
+    }
+    human_limit::Searcher searcher(net);
+
     chess::Game game;
-    engine::Searcher searcher;
     std::vector<std::string> sanMoves;
     std::string result = "*";
 
@@ -142,8 +150,8 @@ int main() {
     pgn << "[Site \"?\"]\n";
     pgn << "[Date \"" << currentDateForPgn() << "\"]\n";
     pgn << "[Round \"1\"]\n";
-    pgn << "[White \"SimpleEngine\"]\n";
-    pgn << "[Black \"SimpleEngine\"]\n";
+    pgn << "[White \"HumanLimit\"]\n";
+    pgn << "[Black \"HumanLimit\"]\n";
     pgn << "[Result \"" << result << "\"]\n\n";
 
     for (size_t i = 0; i < sanMoves.size(); i++) {

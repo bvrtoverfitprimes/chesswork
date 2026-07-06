@@ -3,9 +3,7 @@
 #include <algorithm>
 #include <cctype>
 
-#include "evaluation.h"
-
-namespace engine {
+namespace human_limit {
 
 namespace {
 
@@ -40,6 +38,8 @@ bool hasNonPawnMaterial(chess::Game& game) {
 }
 
 }
+
+Searcher::Searcher(const Network& net) : net_(net) {}
 
 bool Searcher::timeExpired() {
     if (timeLimitMs_ <= 0) return false;
@@ -94,7 +94,7 @@ int Searcher::quiescence(chess::Game& game, int alpha, int beta) {
     }
 
     bool inCheck = game.inCheck();
-    int standPat = evaluate(game.boardArray());
+    int standPat = static_cast<int>(net_.evaluate(game));
     int score = (game.turn() == chess::Color::White) ? standPat : -standPat;
 
     if (!inCheck) {
@@ -150,7 +150,7 @@ int Searcher::negamax(chess::Game& game, int depth, int ply, int alpha, int beta
     }
 
     if (ply >= kMaxPly - 1) {
-        int whiteScore = evaluate(game.boardArray());
+        int whiteScore = static_cast<int>(net_.evaluate(game));
         return (game.turn() == chess::Color::White) ? whiteScore : -whiteScore;
     }
 

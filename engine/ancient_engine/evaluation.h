@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../chess/pieces.h"
+#include "../../chess/pieces.h"
 
-namespace engine {
+namespace ancient_engine {
 
 int evaluate(const chess::BoardArray& board);
 

@@ -390,3 +390,150 @@ before pushing the engine's strength further — likely via a mating-net
 heuristic in the evaluation, or by making the search treat repetition
 as actively bad (rather than neutral) whenever it is winning by a
 large margin.
+
+## 8. Innovation phase: a self-trained neural evaluator ("human_limit")
+
+Goal stated up front: not to beat top engines, but to move past
+reproducing known techniques and actually train something ourselves —
+targeting a realistic ~3000-level strength ceiling (a bar classical
+engines cleared decades ago, e.g. Deep Blue in 1997, without any
+learning at all), using the same training *paradigm* AlphaZero/Leela
+use (learning purely from self-play, no external game data, no other
+engine's evaluations used anywhere) scaled down to a much smaller
+network and compute budget.
+
+**Renamed and archived** the engine lineage so every stage stays on
+record: the original MVP is now `engine/ancient_engine/` and the
+classical hand-tuned engine (section 6) is now `engine/old_engine/`,
+each with a README explaining its own approach. `human_limit` is the
+new current engine.
+
+**Architecture**: a mixed classical/learned evaluation —
+`score = 0.3 * classicalEval + 0.7 * networkEval`. `classicalEval` is
+the exact same tapered PST formula as `old_engine` (deterministic,
+always structurally correct). `networkEval` is a small feedforward
+network (20 engineered input features -> 128 -> 64 -> 32 -> 1 linear
+output, ~13,000 weights, all learned not hand-set) over the same kind
+of engineered features (material, mobility, king safety, pawn
+structure, etc.) rather than a raw sparse per-square encoding — a
+deliberate scope decision, since a full sparse NNUE-style input needs
+an incrementally-updated accumulator threaded through search to stay
+fast, which is real engineering work saved for a future generation.
+Search is unchanged from `old_engine` (same TT/quiescence/null-move/
+LMR/aspiration-window skeleton) — only the leaf evaluation changed.
+
+**Training** (`train_human_limit.cpp`): self-play games generate
+positions labeled with the game's actual result; a persistent replay
+buffer accumulates across generations (capped, oldest evicted) rather
+than training on and discarding each generation's small batch; plus a
+batch of synthetic "obvious material imbalance" positions injected
+each generation (random self-play opening, then 1-3 random non-king
+pieces removed from one side, labeled by which side now has more
+material) to directly teach a pattern self-play rarely produces
+organically.
+
+**Two real bugs found and fixed along the way, not glossed over:**
+
+1. Games that hit the ply cap without a decided result were being
+   silently discarded from training entirely — most of a generation's
+   compute was wasted producing data that never got used. Fixed by
+   labeling ply-cap games as a draw and using their samples.
+2. A genuine scale-mismatch bug: `Network::evaluate()` scales its
+   output by 1000 for external use, but training compared that 1000x
+   target against the network's *unscaled* raw output — a 1000x
+   mismatch producing huge first-step gradients that corrupted the
+   learned weights into responding backwards to material features
+   (confirmed directly: the network scored capturing a free rook as
+   worse than not capturing it, in both a bare endgame and a dense
+   middlegame test position — a genuine value-function bug, verified
+   by checking the network's raw evaluation, not just search output).
+   Fixed by training entirely in the network's native unscaled range.
+
+**Verification, not just claims**: after each fix, re-ran a fixed set
+of hand-built tactical positions (free hanging rook in a bare endgame,
+free hanging rook in a dense middlegame with a full army still on the
+board, a back-rank mate-in-1, and a hanging-queen-safety check) and
+confirmed via direct evaluation calls (not just search output) exactly
+what the network was and wasn't learning at each stage, rather than
+assuming a fix worked. All four tests pass on the final trained
+weights.
+
+**Internal Elo ladder** (`tools/rating_ladder.py` + `tools/bestmove_cli`,
+no Stockfish involved anywhere): a round-robin among all three engines,
+8 games per pairing, 400ms/move, ratings fit via iterative logistic
+regression from the actual game scores and anchored arbitrarily at
+`old_engine` = 1500 — this is a **relative-only internal scale**, not
+calibrated to CCRL/FIDE/any external rating pool, so it says nothing
+about proximity to real-world 3000. Results:
+
+- `ancient_engine` vs `old_engine`: 1.5/8 (18.8%)
+- `ancient_engine` vs `human_limit`: 4.0/8 (50.0%)
+- `old_engine` vs `human_limit`: 6.0/8 (25.0% for human_limit)
+- Fitted ratings: ancient 1274, old 1500 (anchor), human_limit 1290
+
+Honest reading: `human_limit` currently sits roughly level with the
+simplest baseline (`ancient_engine`) and clearly behind the fully
+hand-tuned classical engine. Since both `old_engine` and `human_limit`
+share identical search code, this gap is purely about evaluation
+quality — the professionally-established classical PST constants still
+outperform a network trained on only ~300 total self-play games at a
+shallow 3-ply search depth during data generation. The training isn't
+hurting (roughly matching the baseline rather than falling below it),
+but it hasn't yet clearly surpassed hand-tuning either. Expected for
+this scale of self-play budget, not a sign anything is broken.
+
+**`play.html`** ported to match: same mixed-architecture blend and
+20-feature extraction in JavaScript, with the actual trained weights
+spliced in (verified independently via Node — same free-rook and
+opening-move behavior as the C++ version).
+
+**Not yet done, called out explicitly rather than left implicit**: the
+move-generation speed rewrite identified by the research in section 9
+below (this section's engine is still exactly as fast/slow as
+`old_engine` — no speed work landed here); and the plan going forward,
+per direct instruction, is to come back and substantially renovate
+`human_limit`'s architecture (network size/features, training budget,
+possibly the incremental-accumulator NNUE upgrade) aiming at the 3000
+target, rather than treating this generation as final.
+
+## 9. Researched how to make search fast (Stockfish-level depth/speed)
+
+Dispatched a research agent (with our actual code as context, not
+generic advice) to find out how engines reach depth 15-20 in a few
+seconds on ordinary hardware, and what specifically to change in ours.
+Findings, prioritized by expected impact:
+
+1. **Biggest suspected-and-confirmed bottleneck**: `getValidMovesUci()`
+   generates pseudo-legal moves then does a full make/unmake +
+   check-scan for *every single one* just to filter out illegal moves.
+   The standard fix is computing checking/pinned pieces once per
+   position up front (a ray-scan from the king in each direction) and
+   masking move generation directly, never simulating a move just to
+   discover it's illegal. Medium effort, likely the single biggest win.
+2. **`std::string`-based moves throughout the hot path** (TT entries,
+   killers, history keys, move lists) — allocation and hashing cost on
+   every node. Fix: packed-integer move encoding, fixed-capacity move
+   lists instead of `std::vector<std::string>`. Low effort, high ROI,
+   composes with everything else.
+3. **Bitboards + magic bitboards** — the largest single engineering
+   item (1-3 weeks), valuable but reportedly less singularly dominant
+   than fixing 1 and 2 first; real payoff is that it makes pin/check
+   detection and future NNUE feature-diffing cheap bitwise ops instead
+   of loops over a char grid.
+4. **True incremental NNUE accumulator** (add/subtract a few weight
+   rows per move instead of recomputing the whole network from scratch
+   at every leaf) — medium-high effort, most valuable once/if a larger
+   sparse-feature network is built.
+5. Lower-effort extras: TT replacement-policy tuning, avoiding heap
+   allocation in hot paths generally, `-O3 -march=native`/LTO,
+   SIMD (mostly relevant once bitboards exist).
+
+**Applied now**: `-O3 -march=native -flto` in the Makefile (the free,
+zero-risk win) — verified the full test suite still passes unchanged.
+**Deliberately not attempted this session**: items 1-4 all touch
+`chess/pieces.cpp`/`chess/board.cpp`, the shared core underneath all
+three engines and the entire test suite — rewriting that mid-session,
+while three engines depend on it and training was actively running,
+risked a regression across everything at the worst possible time.
+Documented here as a prioritized, ready-to-execute backlog rather than
+attempted under time pressure.

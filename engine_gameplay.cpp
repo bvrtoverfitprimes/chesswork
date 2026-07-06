@@ -2,12 +2,14 @@
 #include <iostream>
 
 #include "chess/board.h"
-#include "engine/search.h"
+#include "engine/human_limit/network.h"
+#include "engine/human_limit/search.h"
 
 namespace {
 
 constexpr int kSearchDepth = 64;
 constexpr int kSearchTimeMs = 2000;
+constexpr const char* kWeightsPath = "engine/human_limit/weights.txt";
 
 bool isGameOver(chess::Game& game) {
     if (game.isFiftyMoveDraw()) {
@@ -43,8 +45,14 @@ int main() {
                                    ? chess::Color::Black
                                    : chess::Color::White;
 
+    human_limit::Network net;
+    if (!net.load(kWeightsPath)) {
+        std::cout << "Warning: no trained weights found at " << kWeightsPath
+                  << ", playing with an untrained network.\n";
+    }
+    human_limit::Searcher searcher(net);
+
     chess::Game game;
-    engine::Searcher searcher;
     game.printBoard();
 
     while (!isGameOver(game)) {

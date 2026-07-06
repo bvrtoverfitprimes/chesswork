@@ -1,5 +1,8 @@
 selfplay.pgn
 engine_gameplay
 engine_selfplay
+train_human_limit
+tools/bestmove_cli
 tests/test_chess
 tests/simple_demo
+engine/human_limit/weights.txt

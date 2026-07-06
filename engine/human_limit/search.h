@@ -6,9 +6,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../chess/board.h"
+#include "../../chess/board.h"
+#include "network.h"
 
-namespace engine {
+namespace human_limit {
 
 struct SearchResult {
     std::string uci;
@@ -19,9 +20,13 @@ struct SearchResult {
 
 class Searcher {
 public:
+    explicit Searcher(const Network& net);
+
     SearchResult findBestMove(chess::Game& game, int maxDepth, int timeMs);
 
 private:
+    const Network& net_;
+
     struct TTEntry {
         uint64_t key = 0;
         int depth = -1;
