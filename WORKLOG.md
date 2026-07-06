@@ -257,3 +257,36 @@ root-level programs to confirm nothing broke in the move.
 
 Removed all comments from every source file, including the trailing
 `// namespace x` markers on closing braces.
+
+## 5. CURRENT GAME PLAYED
+
+The engine is fully deterministic (fixed-depth alpha-beta, no
+randomness), so `engine_selfplay` always produces this same game right
+now. Recorded here as a snapshot of current playing strength; this
+section should be replaced whenever the engine changes enough to
+produce a different game.
+
+```
+[Event "Self-play"]
+[Site "?"]
+[Date "2026.7.6"]
+[Round "1"]
+[White "SimpleEngine"]
+[Black "SimpleEngine"]
+[Result "1/2-1/2"]
+
+1. e4 Nc6 2. Bb5 Nd4 3. Bc4 b5 4. c3 bxc4 5. cxd4 c5 6. dxc5 e5 7. b3
+Bxc5 8. a3 Bd4 9. Ra2 Qh4 10. d3 Bb6 11. g3 Qf6 12. d4 cxb3 13. Qxb3
+Ba5+ 14. Bd2 Bxd2+ 15. Rxd2 Qc6 16. Qc2 exd4 17. Qxc6 dxc6 18. Rxd4 f5
+19. e5 Rb8 20. Rb4 Rxb4 21. axb4 Bd7 22. Nf3 Ne7 23. b5 cxb5 24. Nd4
+Nc6 25. Nxc6 Bxc6 26. O-O b4 27. f4 Ke7 28. h3 Rg8 29. h4 Rh8 30. Nd2
+Rd8 31. Rc1 Rxd2 32. Rxc6 Rd1+ 33. Kg2 Rd2+ 34. Kg1 Rd1+ 35. Kg2 Ke8
+36. Rc5 Kf8 37. Rc8+ Kf7 38. Rc7+ Kf8 39. Rxa7 Kg8 40. Ra8+ Kf7 41.
+Ra7+ Kf8 42. Ra6 Rd2+ 43. Kg1 Rd1+ 44. Kg2 Rd2+ 45. Kg1 Rd1+ 46. Kg2
+1/2-1/2
+```
+
+Ends in a draw by repetition around move 46: after trading down to
+rook + bishop/knight + pawns each side, White's rook shuffles Black's
+rook into a repeated check sequence (`Rd2+`/`Rd1+` vs. `Kg2`/`Kg1`)
+that neither side can break out of at this search depth.
