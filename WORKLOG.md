@@ -207,19 +207,6 @@ over the prior conv net.
   (no search at all) are the frontier worth watching but not yet
   state-of-the-art.
 
-### 2.6 Implication for this project
-
-Our current engine is a legal-move generator only (no evaluation, no
-search, no AI) — a deliberately blank slate. The natural next steps, in
-increasing order of sophistication, mirror the history above: (1)
-handcrafted evaluation + minimax/alpha-beta with the classical
-enhancements, ideally on top of a bitboard rewrite for speed; (2) NNUE
-as a drop-in replacement for the handcrafted evaluation once the search
-scaffold exists; (3) MCTS + self-play neural net as an alternative,
-architecturally distinct engine to compare against the first. We
-haven't decided yet which path to build first — this section is meant
-to inform that decision, not make it.
-
 Sources consulted: chessprogramming.org (Alpha-Beta, NNUE, Null Move
 Pruning, Killer Heuristic, Lazy SMP, Bitboards, AlphaZero, Leela Chess
 Zero pages), Stockfish NNUE docs and nnue-pytorch documentation
@@ -228,3 +215,32 @@ Zero pages), Stockfish NNUE docs and nnue-pytorch documentation
 paper (Silver et al., Science 2018 / arXiv:1712.01815), Leela Chess Zero
 project blog and docs (lczero.org), and 2026 engine-comparison writeups
 (checkmatex.app, raindropchess.com) for current Elo/TCEC standings.
+
+## 3. Built a first engine (MVP, no neural network, no learning)
+
+Added an `engine/` folder implementing the classical recipe from section
+2.2 at MVP scope: material-count + center-bonus evaluation
+(`engine/evaluation.h/.cpp`, the same heuristic the very first Python
+prototype used), and negamax with alpha-beta pruning plus simple
+capture-first move ordering and mate-distance scoring
+(`engine/search.h/.cpp`). Fixed search depth (4 plies), no quiescence
+search, no transposition table — deliberately left out to keep this
+first version simple; a real strength upgrade would add those next.
+
+Two driver programs consume the same `chess::Game` and `engine::search`
+API:
+- `engine/engine_gameplay.cpp` — asks which color you want to play, then
+  runs a human-vs-engine game in the terminal (engine moves are chosen
+  by `findBestMove` and printed before the board).
+- `engine/engine_selfplay.cpp` — engine vs. itself for one full game,
+  emitting a proper PGN transcript (SAN notation with disambiguation,
+  captures, castling, promotion, and check/checkmate symbols) to stdout.
+
+Added `Game::boardArray()` (a const accessor to the private board state)
+to `chess/board.h` so the evaluator can read the position without the
+engine needing to duplicate board representation.
+
+Verified: `make test` still passes unchanged after adding the accessor;
+ran `engine_selfplay` end-to-end (a full game resolved by repetition
+draw in ~10s at depth 4) and `engine_gameplay` as both colors, confirming
+legal engine moves are chosen and applied correctly in both directions.

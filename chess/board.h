@@ -47,6 +47,7 @@ public:
     std::vector<std::string> getValidMovesUci();
 
     Color turn() const { return turn_; }
+    const BoardArray& boardArray() const { return board_; }
     bool inCheck() const;
     bool isCheckmate();
     bool isStalemate();
