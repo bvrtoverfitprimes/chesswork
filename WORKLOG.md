@@ -372,3 +372,21 @@ setup), a genuine tactical middlegame with piece trades starting move
 8, and a real forced mating sequence finishing with `Qe1#` — a
 substantial step up from section 5's old MVP engine, which only ever
 shuffled into a repetition draw.
+
+## 7. Known weakness: converting a won endgame to mate
+
+Ad-hoc testing surfaced a real gap: in a position where the engine had
+built an overwhelming material advantage (queen and rook vs. a bare
+king), it failed to find the forced mate and instead repeated checks
+until the game was drawn by threefold repetition — throwing away a
+completely winning position.
+
+This is a known class of problem for engines built the way ours is:
+the search and evaluation are tuned for finding good moves in roughly
+balanced positions, not for the specific technique of mating with
+overwhelming material, and nothing in the search actively steers away
+from repeating when its own score is already very high. Worth fixing
+before pushing the engine's strength further — likely via a mating-net
+heuristic in the evaluation, or by making the search treat repetition
+as actively bad (rather than neutral) whenever it is winning by a
+large margin.
