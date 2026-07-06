@@ -37,4 +37,4 @@ std::vector<Move> genPseudoMoves(const BoardArray& board, Color color,
                                   const CastlingRights& castlingRights,
                                   const std::optional<Pos>& enPassantTarget);
 
-} // namespace chess
+}

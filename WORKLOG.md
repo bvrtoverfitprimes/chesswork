@@ -244,3 +244,16 @@ Verified: `make test` still passes unchanged after adding the accessor;
 ran `engine_selfplay` end-to-end (a full game resolved by repetition
 draw in ~10s at depth 4) and `engine_gameplay` as both colors, confirming
 legal engine moves are chosen and applied correctly in both directions.
+
+## 4. Reorganized entry points, stripped comments
+
+Moved `simple_demo.cpp` into `tests/` (it's a manual smoke test, not a
+deliverable). Pulled `engine_gameplay.cpp` and `engine_selfplay.cpp` out
+of `engine/` up to the repo root, since they're the two things meant to
+actually be run directly — `engine/` now holds only the reusable
+evaluation/search library code. Updated all `#include` paths and the
+Makefile accordingly, rebuilt, and reran `make test` plus both
+root-level programs to confirm nothing broke in the move.
+
+Removed all comments from every source file, including the trailing
+`// namespace x` markers on closing braces.

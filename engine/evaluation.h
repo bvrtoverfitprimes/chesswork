@@ -6,4 +6,4 @@ namespace engine {
 
 int evaluate(const chess::BoardArray& board);
 
-} // namespace engine
+}

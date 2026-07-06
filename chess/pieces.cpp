@@ -42,7 +42,7 @@ std::vector<std::pair<int, int>> dirsFor(char pieceLower) {
     return {QUEEN_DIRS.begin(), QUEEN_DIRS.end()};
 }
 
-} // namespace
+}
 
 bool onBoard(int r, int c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
 
@@ -226,4 +226,4 @@ std::vector<Move> genPseudoMoves(const BoardArray& board, Color color,
     return moves;
 }
 
-} // namespace chess
+}

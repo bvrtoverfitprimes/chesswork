@@ -5,8 +5,8 @@
 #include <iostream>
 #include <sstream>
 
-#include "../chess/board.h"
-#include "search.h"
+#include "chess/board.h"
+#include "engine/search.h"
 
 namespace {
 
@@ -101,7 +101,7 @@ std::string currentDateForPgn() {
     return oss.str();
 }
 
-} // namespace
+}
 
 int main() {
     chess::Game game;

@@ -57,7 +57,7 @@ int negamax(chess::Game& game, int depth, int ply, int alpha, int beta) {
     return best;
 }
 
-} // namespace
+}
 
 SearchResult findBestMove(chess::Game& game, int depth) {
     auto moves = game.getValidMovesUci();
@@ -85,4 +85,4 @@ SearchResult findBestMove(chess::Game& game, int depth) {
     return result;
 }
 
-} // namespace engine
+}

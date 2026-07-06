@@ -13,4 +13,4 @@ struct SearchResult {
 
 SearchResult findBestMove(chess::Game& game, int depth);
 
-} // namespace engine
+}

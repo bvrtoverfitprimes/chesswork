@@ -13,7 +13,7 @@ std::mt19937_64 rng(std::random_device{}());
 
 bool isUpperPiece(char p) { return p != ' ' && std::isupper(static_cast<unsigned char>(p)); }
 
-} // namespace
+}
 
 int Game::pieceIndex(char piece) {
     switch (piece) {
@@ -392,4 +392,4 @@ void Game::run() {
     }
 }
 
-} // namespace chess
+}

@@ -223,7 +223,7 @@ void testIllegalMoveStrainRandomSelfPlay() {
     check(true, "random legal self-play for 60 plies completed without crashing or desyncing");
 }
 
-} // namespace
+}
 
 int main() {
     testPerftStartPos();

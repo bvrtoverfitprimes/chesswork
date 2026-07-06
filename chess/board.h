@@ -74,4 +74,4 @@ private:
     static int pieceIndex(char piece);
 };
 
-} // namespace chess
+}

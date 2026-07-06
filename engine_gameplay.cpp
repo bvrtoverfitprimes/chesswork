@@ -1,8 +1,8 @@
 #include <algorithm>
 #include <iostream>
 
-#include "../chess/board.h"
-#include "search.h"
+#include "chess/board.h"
+#include "engine/search.h"
 
 namespace {
 
@@ -32,7 +32,7 @@ bool isGameOver(chess::Game& game) {
     return false;
 }
 
-} // namespace
+}
 
 int main() {
     std::cout << "Play as (w)hite or (b)lack? ";

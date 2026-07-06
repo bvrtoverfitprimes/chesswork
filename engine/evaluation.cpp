@@ -21,7 +21,7 @@ bool isCenterSquare(int r, int c) {
     return (r == 3 || r == 4) && (c == 3 || c == 4);
 }
 
-} // namespace
+}
 
 int evaluate(const chess::BoardArray& board) {
     int score = 0;
@@ -41,4 +41,4 @@ int evaluate(const chess::BoardArray& board) {
     return score;
 }
 
-} // namespace engine
+}
