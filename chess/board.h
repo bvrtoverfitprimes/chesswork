@@ -52,6 +52,12 @@ public:
     void unmakeNullMove(const NullUndo& undo);
 
     std::vector<std::string> getValidMovesUci();
+    // Same legality filtering as getValidMovesUci(), without the UCI-string round-trip —
+    // for hot-path callers (search) that already work with Move structs.
+    std::vector<Move> getValidMoves();
+    // Kept permanently as a slow, structurally-simple oracle for tests/test_fast_legality.cpp
+    // to cross-validate getValidMovesUci()'s pin/check-mask fast path against.
+    std::vector<std::string> getValidMovesUciSlow();
 
     Color turn() const { return turn_; }
     const BoardArray& boardArray() const { return board_; }
@@ -73,6 +79,8 @@ private:
     CastlingRights castlingRights_ = {true, true, true, true};
     std::optional<Pos> enPassantTarget_;
     int halfMoves_ = 0;
+    Pos whiteKing_{-1, -1};
+    Pos blackKing_{-1, -1};
 
     std::array<std::array<uint64_t, 13>, 64> zobristTable_;
     uint64_t zobristBlackToMoveKey_ = 0;
@@ -81,6 +89,8 @@ private:
 
     void initZobrist();
     void resetRepetitionTable();
+    void findKings();
+    bool inCheckColor(Color c) const;
     static int pieceIndex(char piece);
 };
 

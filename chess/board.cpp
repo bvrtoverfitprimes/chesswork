@@ -40,6 +40,7 @@ Game::Game() {
     board_[1].fill('p');
     board_[0] = {'r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'};
 
+    findKings();
     initZobrist();
     resetRepetitionTable();
 }
@@ -84,8 +85,23 @@ Game::Game(const std::string& fen) {
 
     halfMoves_ = halfmoveClock;
 
+    findKings();
     initZobrist();
     resetRepetitionTable();
+}
+
+void Game::findKings() {
+    for (int r = 0; r < 8; r++) {
+        for (int c = 0; c < 8; c++) {
+            if (board_[r][c] == 'K') whiteKing_ = {r, c};
+            else if (board_[r][c] == 'k') blackKing_ = {r, c};
+        }
+    }
+}
+
+bool Game::inCheckColor(Color c) const {
+    Pos king = (c == Color::White) ? whiteKing_ : blackKing_;
+    return isAttacked(board_, king.r, king.c, c);
 }
 
 void Game::resetRepetitionTable() {
@@ -206,6 +222,7 @@ UndoMove Game::makeMove(Pos from, Pos to, char promotion) {
     zobristHash_ ^= zobristTable_[r2 * 8 + c2][pieceIndex(piece)];
 
     if (piece == 'K') {
+        whiteKing_ = to;
         castlingRights_[0] = false;
         castlingRights_[1] = false;
         if (std::abs(c2 - c1) == 2) {
@@ -227,6 +244,7 @@ UndoMove Game::makeMove(Pos from, Pos to, char promotion) {
             }
         }
     } else if (piece == 'k') {
+        blackKing_ = to;
         castlingRights_[2] = false;
         castlingRights_[3] = false;
         if (std::abs(c2 - c1) == 2) {
@@ -312,6 +330,9 @@ void Game::unmakeMove(const UndoMove& undo) {
     board_[r1][c1] = undo.piece;
     board_[r2][c2] = undo.captured;
 
+    if (undo.piece == 'K') whiteKing_ = undo.from;
+    else if (undo.piece == 'k') blackKing_ = undo.from;
+
     if (undo.moveType == MoveType::Castle) {
         board_[undo.rookFrom.r][undo.rookFrom.c] = board_[undo.rookTo.r][undo.rookTo.c];
         board_[undo.rookTo.r][undo.rookTo.c] = ' ';
@@ -343,7 +364,47 @@ void Game::unmakeNullMove(const NullUndo& undo) {
     zobristHash_ = undo.prevHash;
 }
 
+std::vector<Move> Game::getValidMoves() {
+    std::vector<Move> valid;
+    auto moves = genPseudoMoves(board_, turn_, castlingRights_, enPassantTarget_);
+    Pos ownKing = (turn_ == Color::White) ? whiteKing_ : blackKing_;
+    LegalMoveContext ctx = computeLegalMoveContext(board_, turn_, ownKing);
+
+    for (const auto& m : moves) {
+        char promo = (m.promotion == ' ') ? 'q' : m.promotion;
+        char movingPiece = board_[m.from.r][m.from.c];
+        bool isKingMove = std::tolower(static_cast<unsigned char>(movingPiece)) == 'k';
+        bool isEnPassantCapture = std::tolower(static_cast<unsigned char>(movingPiece)) == 'p' &&
+                                   m.from.c != m.to.c && board_[m.to.r][m.to.c] == ' ';
+
+        bool legal;
+        if (isKingMove || isEnPassantCapture) {
+            UndoMove undo = makeMove(m.from, m.to, promo);
+            Color justMoved = (turn_ == Color::White) ? Color::Black : Color::White;
+            legal = !inCheckColor(justMoved);
+            unmakeMove(undo);
+        } else {
+            legal = isLegalFast(ctx, m);
+        }
+
+        if (legal) valid.push_back(m);
+    }
+    return valid;
+}
+
 std::vector<std::string> Game::getValidMovesUci() {
+    std::vector<std::string> valid;
+    auto moves = getValidMoves();
+    valid.reserve(moves.size());
+    for (const auto& m : moves) {
+        std::string uci = squareToStr(m.from) + squareToStr(m.to);
+        if (m.promotion != ' ') uci += m.promotion;
+        valid.push_back(std::move(uci));
+    }
+    return valid;
+}
+
+std::vector<std::string> Game::getValidMovesUciSlow() {
     std::vector<std::string> valid;
     auto moves = genPseudoMoves(board_, turn_, castlingRights_, enPassantTarget_);
     for (const auto& m : moves) {
@@ -361,7 +422,7 @@ std::vector<std::string> Game::getValidMovesUci() {
 }
 
 bool Game::inCheck() const {
-    return isCheck(board_, turn_);
+    return inCheckColor(turn_);
 }
 
 bool Game::isCheckmate() {

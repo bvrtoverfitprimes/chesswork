@@ -109,10 +109,126 @@ bool isCheck(const BoardArray& board, Color color) {
     return false;
 }
 
+LegalMoveContext computeLegalMoveContext(const BoardArray& board, Color color) {
+    bool isWhite = color == Color::White;
+    char kChar = isWhite ? 'K' : 'k';
+    Pos king{-1, -1};
+    for (int r = 0; r < 8; r++) {
+        for (int c = 0; c < 8; c++) {
+            if (board[r][c] == kChar) king = {r, c};
+        }
+    }
+    return computeLegalMoveContext(board, color, king);
+}
+
+LegalMoveContext computeLegalMoveContext(const BoardArray& board, Color color, Pos king) {
+    LegalMoveContext ctx;
+    ctx.king = king;
+    bool isWhite = color == Color::White;
+    int kr = ctx.king.r, kc = ctx.king.c;
+
+    for (auto [dr, dc] : KNIGHT_OFFSETS) {
+        int tr = kr + dr, tc = kc + dc;
+        if (onBoard(tr, tc)) {
+            char p = board[tr][tc];
+            if (isEnemy(p, isWhite) && std::tolower(static_cast<unsigned char>(p)) == 'n') {
+                ctx.checkerCount++;
+                ctx.resolutionSquares.push_back({tr, tc});
+            }
+        }
+    }
+
+    if (isWhite) {
+        if (onBoard(kr - 1, kc - 1) && board[kr - 1][kc - 1] == 'p') {
+            ctx.checkerCount++;
+            ctx.resolutionSquares.push_back({kr - 1, kc - 1});
+        }
+        if (onBoard(kr - 1, kc + 1) && board[kr - 1][kc + 1] == 'p') {
+            ctx.checkerCount++;
+            ctx.resolutionSquares.push_back({kr - 1, kc + 1});
+        }
+    } else {
+        if (onBoard(kr + 1, kc - 1) && board[kr + 1][kc - 1] == 'P') {
+            ctx.checkerCount++;
+            ctx.resolutionSquares.push_back({kr + 1, kc - 1});
+        }
+        if (onBoard(kr + 1, kc + 1) && board[kr + 1][kc + 1] == 'P') {
+            ctx.checkerCount++;
+            ctx.resolutionSquares.push_back({kr + 1, kc + 1});
+        }
+    }
+
+    for (auto [dr, dc] : QUEEN_DIRS) {
+        bool diagonal = (dr != 0 && dc != 0);
+        std::vector<Pos> emptySquares;
+        Pos ownPieceSquare{-1, -1};
+        bool foundOwn = false;
+        int tr = kr + dr, tc = kc + dc;
+        while (onBoard(tr, tc)) {
+            char p = board[tr][tc];
+            if (p == ' ') {
+                emptySquares.push_back({tr, tc});
+                tr += dr;
+                tc += dc;
+                continue;
+            }
+            bool pieceIsWhite = isWhitePiece(p);
+            bool isOwnPiece = (pieceIsWhite == isWhite);
+            if (isOwnPiece) {
+                if (foundOwn) break;
+                foundOwn = true;
+                ownPieceSquare = {tr, tc};
+                tr += dr;
+                tc += dc;
+                continue;
+            }
+            char pl = std::tolower(static_cast<unsigned char>(p));
+            bool attacksThisDir = diagonal ? (pl == 'b' || pl == 'q') : (pl == 'r' || pl == 'q');
+            if (attacksThisDir) {
+                if (!foundOwn) {
+                    ctx.checkerCount++;
+                    for (const auto& sq : emptySquares) ctx.resolutionSquares.push_back(sq);
+                    ctx.resolutionSquares.push_back({tr, tc});
+                } else {
+                    ctx.pinned[ownPieceSquare.r][ownPieceSquare.c] = true;
+                    ctx.pinDir[ownPieceSquare.r][ownPieceSquare.c] = {dr, dc};
+                }
+            }
+            break;
+        }
+    }
+
+    return ctx;
+}
+
+bool isLegalFast(const LegalMoveContext& ctx, const Move& m) {
+    if (ctx.checkerCount >= 2) return false;
+
+    if (ctx.checkerCount == 1) {
+        bool resolves = false;
+        for (const auto& sq : ctx.resolutionSquares) {
+            if (sq == m.to) {
+                resolves = true;
+                break;
+            }
+        }
+        if (!resolves) return false;
+    }
+
+    if (ctx.pinned[m.from.r][m.from.c]) {
+        auto [dr, dc] = ctx.pinDir[m.from.r][m.from.c];
+        int mdr = m.to.r - m.from.r, mdc = m.to.c - m.from.c;
+        if (mdr * dc - mdc * dr != 0) return false;
+    }
+
+    return true;
+}
+
 std::vector<Move> genPseudoMoves(const BoardArray& board, Color color,
                                   const CastlingRights& castlingRights,
                                   const std::optional<Pos>& enPassantTarget) {
     std::vector<Move> moves;
+    moves.reserve(48);
     bool isWhite = color == Color::White;
 
     for (int r = 0; r < 8; r++) {

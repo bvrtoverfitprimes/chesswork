@@ -1,53 +1,58 @@
 #pragma once
 
-#include <array>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "../../chess/board.h"
+#include "nnue_features.h"
 
 namespace human_limit {
 
-constexpr int kInputSize = 20;
-constexpr int kHidden1Size = 128;
-constexpr int kHidden2Size = 64;
-constexpr int kHidden3Size = 32;
-
-struct Features {
-    std::array<double, kInputSize> x;
-    double classicalEval = 0.0;
-};
-
-constexpr double kClassicalWeight = 0.3;
-constexpr double kNetworkWeight = 0.7;
-
-Features extractFeatures(const chess::Game& game);
+constexpr double kCpScale = 400.0;
+constexpr int kHeadWidth = 32;
 
 class Network {
 public:
-    Network();
+    Network() = default;
 
     double evaluate(const chess::Game& game) const;
+    float forward(const FeatureSet& features, int bucket) const;
+    float forwardFromAccumulators(const std::vector<float>& stmAcc, const std::vector<float>& ntmAcc,
+                                   int bucket) const;
+    double evaluateFromAccumulators(const std::vector<float>& whiteAcc, const std::vector<float>& blackAcc,
+                                     chess::Color turn, int bucket) const;
 
-    double forward(const Features& f, std::array<double, kHidden1Size>* h1Out = nullptr,
-                    std::array<double, kHidden2Size>* h2Out = nullptr,
-                    std::array<double, kHidden3Size>* h3Out = nullptr) const;
+    double evaluateFromAccumulatorsWithThreats(const std::vector<float>& whiteAcc, const std::vector<float>& blackAcc,
+                                                const chess::BoardArray& board, chess::Color turn, int bucket) const;
 
-    void trainStep(const Features& f, double target, double learningRate);
+    int hiddenSize() const { return hidden_; }
+    const float* embeddingRow(int featureIdx) const {
+        return &embedding_[static_cast<size_t>(featureIdx) * hidden_];
+    }
 
-    void save(const std::string& path) const;
     bool load(const std::string& path);
 
-private:
-    std::array<std::array<double, kInputSize>, kHidden1Size> w1_;
-    std::array<double, kHidden1Size> b1_;
-    std::array<std::array<double, kHidden1Size>, kHidden2Size> w2_;
-    std::array<double, kHidden2Size> b2_;
-    std::array<std::array<double, kHidden2Size>, kHidden3Size> w3_;
-    std::array<double, kHidden3Size> b3_;
-    std::array<double, kHidden3Size> w4_;
-    double b4_ = 0.0;
+    float headForwardFloatReference(const std::vector<float>& x, int bucket) const;
 
-    void randomInit();
+private:
+    int hidden_ = 0;
+    int numBuckets_ = 0;
+    std::vector<float> embedding_;
+
+    std::vector<float> fc1w_;
+    std::vector<float> fc1b_;
+    std::vector<int8_t> fc1wQuant_;
+    std::vector<float> fc1wScale_;
+    std::vector<int32_t> fc1wRowSum_;
+    std::vector<float> fc2w_;
+    std::vector<float> fc2b_;
+    std::vector<float> fc3w_;
+    std::vector<float> fc3b_;
+
+    mutable std::vector<float> scratchX_;
+
+    float headForward(const std::vector<float>& x, int bucket) const;
 };
 
 }

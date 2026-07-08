@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <iostream>
 
+#include "chess/bitboard/bitboard.h"
+#include "chess/bitboard/magic.h"
+#include "chess/bitboard/position.h"
 #include "chess/board.h"
 #include "engine/human_limit/network.h"
 #include "engine/human_limit/search.h"
@@ -9,7 +12,7 @@ namespace {
 
 constexpr int kSearchDepth = 64;
 constexpr int kSearchTimeMs = 2000;
-constexpr const char* kWeightsPath = "engine/human_limit/weights.txt";
+constexpr const char* kWeightsPath = "engine/human_limit/nnue_weights.bin";
 
 bool isGameOver(chess::Game& game) {
     if (game.isFiftyMoveDraw()) {
@@ -38,6 +41,9 @@ bool isGameOver(chess::Game& game) {
 }
 
 int main() {
+    chess::bitboard::initAttackTables();
+    chess::bitboard::initMagics();
+
     std::cout << "Play as (w)hite or (b)lack? ";
     std::string choice;
     std::cin >> choice;
@@ -72,7 +78,8 @@ int main() {
             char promo = (moveInput.size() == 5) ? moveInput[4] : 'q';
             game.makeMove(from, to, promo);
         } else {
-            auto result = searcher.findBestMove(game, kSearchDepth, kSearchTimeMs);
+            chess::bitboard::Position pos(game.toFen());
+            auto result = searcher.findBestMove(pos, kSearchDepth, kSearchTimeMs);
             std::cout << "\nEngine plays: " << result.uci << "\n";
             chess::Pos from = chess::Game::parseSquare(result.uci.substr(0, 2));
             chess::Pos to = chess::Game::parseSquare(result.uci.substr(2, 2));

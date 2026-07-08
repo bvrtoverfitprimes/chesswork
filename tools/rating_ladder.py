@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import itertools
@@ -8,7 +9,7 @@ GAMES_PER_PAIRING = int(sys.argv[1]) if len(sys.argv) > 1 else 8
 TIME_MS = int(sys.argv[2]) if len(sys.argv) > 2 else 300
 MAX_PLIES = 200
 
-CLI = "tools/bestmove_cli"
+CLI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "bestmove_cli.exe")
 
 
 def get_move(engine, board):

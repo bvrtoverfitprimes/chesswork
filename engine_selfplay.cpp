@@ -6,6 +6,9 @@
 #include <iostream>
 #include <sstream>
 
+#include "chess/bitboard/bitboard.h"
+#include "chess/bitboard/magic.h"
+#include "chess/bitboard/position.h"
 #include "chess/board.h"
 #include "engine/human_limit/network.h"
 #include "engine/human_limit/search.h"
@@ -15,7 +18,7 @@ namespace {
 constexpr int kSearchDepth = 64;
 constexpr int kSearchTimeMs = 1000;
 constexpr int kMaxPlies = 300;
-constexpr const char* kWeightsPath = "engine/human_limit/weights.txt";
+constexpr const char* kWeightsPath = "engine/human_limit/nnue_weights.bin";
 
 char pieceLetter(char pieceLower) {
     switch (pieceLower) {
@@ -108,6 +111,9 @@ std::string currentDateForPgn() {
 }
 
 int main() {
+    chess::bitboard::initAttackTables();
+    chess::bitboard::initMagics();
+
     human_limit::Network net;
     if (!net.load(kWeightsPath)) {
         std::cout << "Warning: no trained weights found at " << kWeightsPath
@@ -135,7 +141,8 @@ int main() {
             break;
         }
 
-        auto best = searcher.findBestMove(game, kSearchDepth, kSearchTimeMs);
+        chess::bitboard::Position pos(game.toFen());
+        auto best = searcher.findBestMove(pos, kSearchDepth, kSearchTimeMs);
         std::string san = sanForMove(game, best.uci, legal);
         sanMoves.push_back(san);
 

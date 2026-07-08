@@ -2,13 +2,34 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace human_limit {
 
 namespace {
 
+using chess::bitboard::BBMove;
+using chess::bitboard::Position;
+
 constexpr int kInfinity = 10'000'000;
 constexpr int kMateScore = 1'000'000;
+constexpr int kMaxPly = 128;
+
+constexpr int kLmrMaxDepth = 64;
+constexpr int kLmrMaxMoveIndex = 64;
+int g_lmrTable[kLmrMaxDepth][kLmrMaxMoveIndex];
+struct LmrTableInit {
+    LmrTableInit() {
+        for (int d = 1; d < kLmrMaxDepth; d++) {
+            for (int mi = 1; mi < kLmrMaxMoveIndex; mi++) {
+                double r = 1.0 + std::log(static_cast<double>(d)) * std::log(static_cast<double>(mi)) * 0.75;
+                g_lmrTable[d][mi] = static_cast<int>(r);
+            }
+        }
+    }
+} g_lmrTableInit;
 
 int pieceValue(char pieceLower) {
     switch (pieceLower) {
@@ -21,25 +42,128 @@ int pieceValue(char pieceLower) {
     }
 }
 
-bool hasNonPawnMaterial(chess::Game& game) {
-    const auto& board = game.boardArray();
-    bool white = game.turn() == chess::Color::White;
-    for (int r = 0; r < 8; r++) {
-        for (int c = 0; c < 8; c++) {
-            char p = board[r][c];
-            if (p == ' ') continue;
-            bool isWhitePiece = std::isupper(static_cast<unsigned char>(p));
-            if (isWhitePiece != white) continue;
-            char pl = std::tolower(static_cast<unsigned char>(p));
-            if (pl != 'p' && pl != 'k') return true;
-        }
-    }
-    return false;
+std::string moveToUci(const BBMove& m) {
+    std::string uci = Position::squareToUci(m.from) + Position::squareToUci(m.to);
+    if (m.promotion != ' ') uci += m.promotion;
+    return uci;
 }
+
+bool isCaptureMove(const Position& pos, const BBMove& m) {
+    if (pos.pieceAt(m.to) != ' ') return true;
+    char piece = pos.pieceAt(m.from);
+    return std::tolower(static_cast<unsigned char>(piece)) == 'p' && pos.enPassantTarget() == m.to;
+}
+
+int capturedPieceValue(const Position& pos, const BBMove& m) {
+    char captured = pos.pieceAt(m.to);
+    if (captured != ' ') return pieceValue(std::tolower(static_cast<unsigned char>(captured)));
+    return isCaptureMove(pos, m) ? pieceValue('p') : 0;
+}
+
+int scoreToTT(int score, int ply) {
+    if (score >= kMateScore - kMaxPly) return score + ply;
+    if (score <= -(kMateScore - kMaxPly)) return score - ply;
+    return score;
+}
+
+int scoreFromTT(int score, int ply) {
+    if (score >= kMateScore - kMaxPly) return score - ply;
+    if (score <= -(kMateScore - kMaxPly)) return score + ply;
+    return score;
+}
+
+constexpr int kRfpMarginPerPly = 150;
+constexpr int kRfpMaxDepth = 8;
+
+constexpr int kFutilityMargin[4] = {0, 100, 300, 500};
+constexpr int kFutilityMaxDepth = 3;
+
+constexpr int kRazorMargin[4] = {0, 300, 500, 800};
+constexpr int kRazorMaxDepth = 3;
+
+constexpr int kLmpMaxDepth = 6;
+int lmpThreshold(int depth, bool improving) {
+    return improving ? (5 + depth * depth) : (3 + depth * depth / 2);
+}
+
+constexpr int kIirMinDepth = 6;
+constexpr int kSingularMinDepth = 6;
+constexpr int kProbCutMinDepth = 5;
+constexpr int kProbCutMargin = 200;
+
+constexpr int kDeltaMargin = 200;
 
 }
 
-Searcher::Searcher(const Network& net) : net_(net) {}
+Searcher::Searcher(const Network& net) : net_(net) {
+    for (auto& row : killers_) row[0] = row[1] = kNoMove;
+    for (auto& v : prevMovePieceTo_) v = kNoPieceTo;
+}
+
+int Searcher::pieceKindIndex(char mailboxPiece) {
+    static const std::string kOrder = "PNBRQKpnbrqk";
+    size_t pos = kOrder.find(mailboxPiece);
+    return pos == std::string::npos ? 0 : static_cast<int>(pos);
+}
+
+int Searcher::contHistIndex(char prevPiece, int prevTo, char piece, int to) {
+    int prevIdx = pieceKindIndex(prevPiece) * 64 + prevTo;
+    int idx = pieceKindIndex(piece) * 64 + to;
+    return prevIdx * kContHistDim + idx;
+}
+
+int Searcher::lmrReduction(int depth, int moveIndex) const {
+    int d = std::min(depth, kLmrMaxDepth - 1);
+    int mi = std::min(moveIndex, kLmrMaxMoveIndex - 1);
+    if (d < 1 || mi < 1) return 0;
+    return g_lmrTable[d][mi];
+}
+
+size_t Searcher::correctionKey(const Position& pos) const {
+    uint64_t h = pos.pawnBitboard(chess::Color::White) * 0x9E3779B97F4A7C15ULL;
+    h ^= pos.pawnBitboard(chess::Color::Black) * 0xC2B2AE3D27D4EB4FULL;
+    h ^= pos.nonPawnBitboard(chess::Color::White) * 0x165667B19E3779F9ULL;
+    h ^= pos.nonPawnBitboard(chess::Color::Black) * 0x27D4EB2F165667C5ULL;
+    return static_cast<size_t>(h >> (64 - kCorrHistBits));
+}
+
+int Searcher::correctedStaticEval(Position& pos) {
+    int se = evalWhiteRelative(pos);
+    int stmRelative = (pos.turn() == chess::Color::White) ? se : -se;
+    int sideIdx = (pos.turn() == chess::Color::White) ? 0 : 1;
+    int correction = corrHist_[sideIdx][correctionKey(pos)] / 32;
+    return stmRelative + correction;
+}
+
+void Searcher::updateCorrectionHistory(Position& pos, int depth, int staticEval, int searchResult) {
+    int sideIdx = (pos.turn() == chess::Color::White) ? 0 : 1;
+    size_t key = correctionKey(pos);
+    int bonus = std::clamp((searchResult - staticEval) * depth / 8, -kCorrHistLimit / 4, kCorrHistLimit / 4);
+    int& entry = corrHist_[sideIdx][key];
+    entry += bonus - entry * std::abs(bonus) / kCorrHistLimit;
+    entry = std::clamp(entry, -kCorrHistLimit, kCorrHistLimit);
+}
+
+int Searcher::evalWhiteRelative(Position& pos) {
+    const Accumulator& acc = accStack_[accTop_];
+    int bucket = outputBucketFromPieceCount(acc.pieceCount);
+    return static_cast<int>(net_.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos.toBoardArray(),
+                                                                      pos.turn(), bucket));
+}
+
+void Searcher::pushMove(Position& pos, const chess::bitboard::BBUndo& undo) {
+    applyMoveToAccumulator(net_, pos, undo, accStack_[accTop_], &accStack_[accTop_ + 1]);
+    accTop_++;
+}
+
+void Searcher::popMove() { accTop_--; }
+
+void Searcher::pushNull() {
+    accStack_[accTop_ + 1] = accStack_[accTop_];
+    accTop_++;
+}
+
+void Searcher::popNull() { accTop_--; }
 
 bool Searcher::timeExpired() {
     if (timeLimitMs_ <= 0) return false;
@@ -49,43 +173,44 @@ bool Searcher::timeExpired() {
     return elapsed >= timeLimitMs_;
 }
 
-std::vector<std::string> Searcher::orderMoves(chess::Game& game, const std::vector<std::string>& moves,
-                                               int ply, const std::string& ttMove) {
+std::vector<BBMove> Searcher::orderMoves(Position& pos, const std::vector<BBMove>& moves, int ply,
+                                          const BBMove& ttMove) {
     int clampedPly = std::min(ply, kMaxPly - 1);
-    const auto& board = game.boardArray();
+    int prevEnc = prevMovePieceTo_[clampedPly];
 
-    auto scoreOf = [&](const std::string& uci) {
-        if (uci == ttMove) return 1'000'000;
+    auto scoreOf = [&](const BBMove& m) {
+        if (m == ttMove) return 1'000'000;
 
-        chess::Pos to = chess::Game::parseSquare(uci.substr(2, 2));
-        char captured = board[to.r][to.c];
-        if (captured != ' ') {
-            chess::Pos from = chess::Game::parseSquare(uci.substr(0, 2));
-            char attacker = board[from.r][from.c];
-            return 100'000 + pieceValue(std::tolower(static_cast<unsigned char>(captured))) * 10 -
-                   pieceValue(std::tolower(static_cast<unsigned char>(attacker)));
+        if (isCaptureMove(pos, m)) {
+            int see = pos.see(m.from, m.to);
+            return see >= 0 ? 100'000 + see : -100'000 + see;
         }
-        if (uci == killers_[clampedPly][0]) return 90'000;
-        if (uci == killers_[clampedPly][1]) return 89'000;
+        if (m == killers_[clampedPly][0]) return 90'000;
+        if (m == killers_[clampedPly][1]) return 89'000;
 
-        auto it = history_.find(uci);
-        return it != history_.end() ? it->second : 0;
+        int score = history_[m.from][m.to];
+        if (prevEnc != kNoPieceTo) {
+            char piece = pos.pieceAt(m.from);
+            int idx = pieceKindIndex(piece) * 64 + m.to;
+            score += contHist_[static_cast<size_t>(prevEnc) * kContHistDim + idx];
+        }
+        return score;
     };
 
-    std::vector<std::pair<int, std::string>> scored;
+    std::vector<std::pair<int, BBMove>> scored;
     scored.reserve(moves.size());
     for (const auto& m : moves) scored.push_back({scoreOf(m), m});
 
     std::stable_sort(scored.begin(), scored.end(),
                       [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    std::vector<std::string> ordered;
+    std::vector<BBMove> ordered;
     ordered.reserve(scored.size());
-    for (auto& [score, uci] : scored) ordered.push_back(uci);
+    for (auto& [score, m] : scored) ordered.push_back(m);
     return ordered;
 }
 
-int Searcher::quiescence(chess::Game& game, int alpha, int beta) {
+int Searcher::quiescence(Position& pos, int ply, int alpha, int beta) {
     if (stopped_) return 0;
     nodeCount_++;
     if ((nodeCount_ & 2047) == 0 && timeExpired()) {
@@ -93,45 +218,44 @@ int Searcher::quiescence(chess::Game& game, int alpha, int beta) {
         return 0;
     }
 
-    bool inCheck = game.inCheck();
-    int standPat = static_cast<int>(net_.evaluate(game));
-    int score = (game.turn() == chess::Color::White) ? standPat : -standPat;
+    bool inCheck = pos.inCheck();
+    int standPat = evalWhiteRelative(pos);
+    int score = (pos.turn() == chess::Color::White) ? standPat : -standPat;
 
     if (!inCheck) {
         if (score >= beta) return beta;
         if (score > alpha) alpha = score;
     }
 
-    auto moves = game.getValidMovesUci();
-    if (inCheck && moves.empty()) return -kMateScore;
+    auto moves = pos.getValidMoves();
+    if (inCheck && moves.empty()) return -(kMateScore - ply);
 
-    std::vector<std::string> candidates;
+    std::vector<BBMove> candidates;
     if (inCheck) {
         candidates = moves;
     } else {
-        const auto& board = game.boardArray();
         for (const auto& m : moves) {
-            chess::Pos to = chess::Game::parseSquare(m.substr(2, 2));
-            if (board[to.r][to.c] != ' ') candidates.push_back(m);
+            if (!isCaptureMove(pos, m)) continue;
+            if (pos.see(m.from, m.to) < 0) continue;
+            if (score + capturedPieceValue(pos, m) + kDeltaMargin < alpha) continue;
+            candidates.push_back(m);
         }
     }
 
-    std::sort(candidates.begin(), candidates.end(), [&](const std::string& a, const std::string& b) {
-        const auto& board = game.boardArray();
-        chess::Pos toA = chess::Game::parseSquare(a.substr(2, 2));
-        chess::Pos toB = chess::Game::parseSquare(b.substr(2, 2));
-        return pieceValue(std::tolower(static_cast<unsigned char>(board[toA.r][toA.c]))) >
-               pieceValue(std::tolower(static_cast<unsigned char>(board[toB.r][toB.c])));
+    std::sort(candidates.begin(), candidates.end(), [&](const BBMove& a, const BBMove& b) {
+        if (inCheck) {
+            return capturedPieceValue(pos, a) > capturedPieceValue(pos, b);
+        }
+        return pos.see(a.from, a.to) > pos.see(b.from, b.to);
     });
 
-    for (const auto& uci : candidates) {
-        chess::Pos from = chess::Game::parseSquare(uci.substr(0, 2));
-        chess::Pos to = chess::Game::parseSquare(uci.substr(2, 2));
-        char promo = (uci.size() == 5) ? uci[4] : 'q';
-
-        auto undo = game.makeMove(from, to, promo);
-        int childScore = -quiescence(game, -beta, -alpha);
-        game.unmakeMove(undo);
+    for (const auto& m : candidates) {
+        char promo = (m.promotion != ' ') ? m.promotion : 'q';
+        auto undo = pos.makeMove(m.from, m.to, promo);
+        pushMove(pos, undo);
+        int childScore = -quiescence(pos, ply + 1, -beta, -alpha);
+        popMove();
+        pos.unmakeMove(undo);
 
         if (stopped_) return 0;
         if (childScore >= beta) return beta;
@@ -141,7 +265,8 @@ int Searcher::quiescence(chess::Game& game, int alpha, int beta) {
     return alpha;
 }
 
-int Searcher::negamax(chess::Game& game, int depth, int ply, int alpha, int beta, bool allowNull) {
+int Searcher::negamax(Position& pos, int depth, int ply, int alpha, int beta, bool allowNull,
+                       const BBMove& excludedMove) {
     if (stopped_) return 0;
     nodeCount_++;
     if ((nodeCount_ & 2047) == 0 && timeExpired()) {
@@ -150,107 +275,253 @@ int Searcher::negamax(chess::Game& game, int depth, int ply, int alpha, int beta
     }
 
     if (ply >= kMaxPly - 1) {
-        int whiteScore = static_cast<int>(net_.evaluate(game));
-        return (game.turn() == chess::Color::White) ? whiteScore : -whiteScore;
+        int whiteScore = evalWhiteRelative(pos);
+        return (pos.turn() == chess::Color::White) ? whiteScore : -whiteScore;
     }
 
-    if (ply > 0 && (game.isFiftyMoveDraw() || game.isRepetitionDraw() || game.isInsufficientMaterial())) {
+    if (ply > 0 && (pos.isFiftyMoveDraw() || pos.isRepetitionDraw() || pos.isInsufficientMaterial())) {
         return 0;
     }
 
-    uint64_t key = game.zobristHash();
+    if (ply > 0) {
+        int mateAlpha = -(kMateScore - ply);
+        int mateBeta = kMateScore - ply - 1;
+        if (alpha < mateAlpha) alpha = mateAlpha;
+        if (beta > mateBeta) beta = mateBeta;
+        if (alpha >= beta) return alpha;
+    }
+
+    bool isExcludedSearch = !(excludedMove == kNoMove);
+
+    uint64_t key = pos.zobristHash();
     size_t idx = key & (kTTSize - 1);
     int alphaOrig = alpha;
-    std::string ttMove;
+    BBMove ttMove = kNoMove;
+    bool ttHit = (tt_[idx].key == key);
+    int ttFlag = ttHit ? tt_[idx].flag : -1;
+    int ttScore = ttHit ? scoreFromTT(tt_[idx].score, ply) : 0;
+    int ttDepth = ttHit ? tt_[idx].depth : -1;
 
-    if (tt_[idx].key == key) {
+    if (ttHit) {
         ttMove = tt_[idx].bestMove;
-        if (tt_[idx].depth >= depth) {
-            if (tt_[idx].flag == 0) {
-                return tt_[idx].score;
-            } else if (tt_[idx].flag == 1) {
-                alpha = std::max(alpha, tt_[idx].score);
-            } else if (tt_[idx].flag == 2) {
-                beta = std::min(beta, tt_[idx].score);
+        if (!isExcludedSearch && ttDepth >= depth) {
+            if (ttFlag == 0) {
+                return ttScore;
+            } else if (ttFlag == 1) {
+                alpha = std::max(alpha, ttScore);
+            } else if (ttFlag == 2) {
+                beta = std::min(beta, ttScore);
             }
-            if (alpha >= beta) return tt_[idx].score;
+            if (alpha >= beta) return ttScore;
         }
     }
 
-    bool inCheck = game.inCheck();
-    auto moves = game.getValidMovesUci();
+    if (!isExcludedSearch && depth >= kIirMinDepth && ttMove == kNoMove) depth--;
+
+    bool inCheck = pos.inCheck();
+    auto moves = pos.getValidMoves();
     if (moves.empty()) {
         if (inCheck) return -(kMateScore - ply);
         return 0;
     }
 
     if (depth <= 0) {
-        return quiescence(game, alpha, beta);
+        return quiescence(pos, ply, alpha, beta);
     }
 
-    if (allowNull && !inCheck && depth >= 3 && hasNonPawnMaterial(game)) {
-        auto nullUndo = game.makeNullMove();
-        constexpr int kNullReduction = 2;
-        int score = -negamax(game, depth - 1 - kNullReduction, ply + 1, -beta, -beta + 1, false);
-        game.unmakeNullMove(nullUndo);
+    bool nearMate = std::abs(beta) >= kMateScore - kMaxPly;
+    int staticEval = 0;
+    bool haveStaticEval = false;
+    auto getStaticEval = [&]() {
+        if (!haveStaticEval) {
+            staticEval = correctedStaticEval(pos);
+            haveStaticEval = true;
+        }
+        return staticEval;
+    };
+
+    int clampedPly = std::min(ply, kMaxPly - 1);
+    bool improving = false;
+    if (!inCheck) {
+        int se = getStaticEval();
+        staticEvalStack_[clampedPly] = se;
+        improving = ply >= 2 && se > staticEvalStack_[clampedPly - 2];
+    } else if (clampedPly >= 2) {
+        staticEvalStack_[clampedPly] = staticEvalStack_[clampedPly - 2];
+    }
+
+    if (!inCheck && ply > 0 && depth <= kRfpMaxDepth && !nearMate) {
+        int se = getStaticEval();
+        int margin = improving ? 100 * depth : kRfpMarginPerPly * depth;
+        if (se - margin >= beta) return beta;
+    }
+
+    if (!isExcludedSearch && !inCheck && ply > 0 && depth <= kRazorMaxDepth && !nearMate &&
+        getStaticEval() + kRazorMargin[depth] <= alpha) {
+        int razorScore = quiescence(pos, ply, alpha, beta);
+        if (razorScore <= alpha) return razorScore;
+    }
+
+    if (allowNull && !isExcludedSearch && !inCheck && ply > 0 && depth >= 3 &&
+        pos.hasNonPawnMaterial(pos.turn()) && getStaticEval() >= beta) {
+        int r = 3 + depth / 4 + std::min((getStaticEval() - beta) / 200, 3);
+        int nullDepth = depth - 1 - r;
+        auto nullUndo = pos.makeNullMove();
+        pushNull();
+        int clampedNullPly = std::min(ply + 1, kMaxPly - 1);
+        prevMovePieceTo_[clampedNullPly] = kNoPieceTo;
+        int score = -negamax(pos, nullDepth, ply + 1, -beta, -beta + 1, false);
+        popNull();
+        pos.unmakeNullMove(nullUndo);
         if (stopped_) return 0;
-        if (score >= beta) return beta;
+        if (score >= beta) {
+            if (score >= kMateScore - kMaxPly) score = beta;
+            if (depth < 12) return score;
+            int verify = negamax(pos, depth - 1 - r, ply, alpha, beta, false);
+            if (verify >= beta) return verify;
+        }
     }
 
-    auto ordered = orderMoves(game, moves, ply, ttMove);
+    auto ordered = orderMoves(pos, moves, ply, ttMove);
+
+    if (!isExcludedSearch && !inCheck && ply > 0 && depth >= kProbCutMinDepth && !nearMate) {
+        int probCutBeta = beta + kProbCutMargin;
+        int seThreshold = probCutBeta - getStaticEval();
+        for (const auto& m : ordered) {
+            if (!isCaptureMove(pos, m)) continue;
+            if (pos.see(m.from, m.to) < seThreshold) continue;
+            char promo = (m.promotion != ' ') ? m.promotion : 'q';
+            auto undo = pos.makeMove(m.from, m.to, promo);
+            pushMove(pos, undo);
+            int score = -negamax(pos, depth - 4, ply + 1, -probCutBeta, -probCutBeta + 1, true);
+            popMove();
+            pos.unmakeMove(undo);
+            if (stopped_) return 0;
+            if (score >= probCutBeta) return score;
+        }
+    }
 
     int best = -kInfinity;
-    std::string bestMove;
+    BBMove bestMove = kNoMove;
     int moveIndex = 0;
+    bool anyMoveSearched = false;
+    int prevEnc = prevMovePieceTo_[clampedPly];
+    std::vector<BBMove> triedQuiets;
+    triedQuiets.reserve(8);
 
-    for (const auto& uci : ordered) {
-        chess::Pos from = chess::Game::parseSquare(uci.substr(0, 2));
-        chess::Pos to = chess::Game::parseSquare(uci.substr(2, 2));
-        char promo = (uci.size() == 5) ? uci[4] : 'q';
-        bool isCapture = game.boardArray()[to.r][to.c] != ' ';
-        bool isPromotion = uci.size() == 5;
+    for (const auto& m : ordered) {
+        if (m == excludedMove) continue;
 
-        auto undo = game.makeMove(from, to, promo);
+        char promo = (m.promotion != ' ') ? m.promotion : 'q';
+        bool isCapture = isCaptureMove(pos, m);
+        bool isPromotion = m.promotion != ' ';
+        bool quiet = !isCapture && !isPromotion;
+        bool losingCapture = isCapture && !isPromotion && pos.see(m.from, m.to) < 0;
 
-        int score;
-        if (moveIndex >= 3 && depth >= 3 && !isCapture && !isPromotion && !game.inCheck()) {
-            score = -negamax(game, depth - 2, ply + 1, -alpha - 1, -alpha, true);
-            if (score > alpha && !stopped_) {
-                score = -negamax(game, depth - 1, ply + 1, -beta, -alpha, true);
+        int extension = 0;
+        if (!isExcludedSearch && ply > 0 && m == ttMove && depth >= kSingularMinDepth && ttHit &&
+            ttFlag == 1 && ttDepth >= depth - 3 && std::abs(ttScore) < kMateScore - kMaxPly) {
+            int singularBeta = ttScore - depth;
+            int singularDepth = (depth - 1) / 2;
+            int excludedScore = negamax(pos, singularDepth, ply, singularBeta - 1, singularBeta, true, ttMove);
+            if (stopped_) return 0;
+            if (excludedScore < singularBeta) {
+                extension = 1;
+            } else if (singularBeta >= beta) {
+                return singularBeta;
             }
-        } else {
-            score = -negamax(game, depth - 1, ply + 1, -beta, -alpha, true);
         }
 
-        game.unmakeMove(undo);
+        auto undo = pos.makeMove(m.from, m.to, promo);
+        pushMove(pos, undo);
+        bool givesCheck = pos.inCheck();
+        if (givesCheck && !losingCapture) extension = std::max(extension, 1);
+        int childPly = std::min(ply + 1, kMaxPly - 1);
+        prevMovePieceTo_[childPly] = pieceKindIndex(undo.piece) * 64 + m.to;
+
+        if (quiet && !inCheck && !givesCheck && ply > 0 && anyMoveSearched && !nearMate) {
+            if (depth <= kLmpMaxDepth && moveIndex >= lmpThreshold(depth, improving)) {
+                popMove();
+                pos.unmakeMove(undo);
+                moveIndex++;
+                continue;
+            }
+            if (depth <= kFutilityMaxDepth && getStaticEval() + kFutilityMargin[depth] <= alpha) {
+                popMove();
+                pos.unmakeMove(undo);
+                moveIndex++;
+                continue;
+            }
+        }
+
+        if (quiet && !givesCheck) triedQuiets.push_back(m);
+
+        int score;
+        if (moveIndex >= 2 && depth >= 3 && (quiet || losingCapture) && !givesCheck) {
+            int r = lmrReduction(depth, moveIndex);
+            if (!improving) r++;
+            if (losingCapture) r++;
+            int reducedDepth = std::max(1, depth - 1 - r);
+            score = -negamax(pos, reducedDepth, ply + 1, -alpha - 1, -alpha, true);
+            if (score > alpha && !stopped_) {
+                score = -negamax(pos, depth - 1 + extension, ply + 1, -beta, -alpha, true);
+            }
+        } else {
+            score = -negamax(pos, depth - 1 + extension, ply + 1, -beta, -alpha, true);
+        }
+
+        popMove();
+        pos.unmakeMove(undo);
         if (stopped_) return 0;
+        anyMoveSearched = true;
 
         if (score > best) {
             best = score;
-            bestMove = uci;
+            bestMove = m;
         }
         if (best > alpha) alpha = best;
         if (alpha >= beta) {
             if (!isCapture) {
-                int clampedPly = std::min(ply, kMaxPly - 1);
-                if (killers_[clampedPly][0] != uci) {
+                if (!(killers_[clampedPly][0] == m)) {
                     killers_[clampedPly][1] = killers_[clampedPly][0];
-                    killers_[clampedPly][0] = uci;
+                    killers_[clampedPly][0] = m;
                 }
-                history_[uci] += depth * depth;
+                int bonus = depth * depth;
+                history_[m.from][m.to] += bonus - history_[m.from][m.to] * std::abs(bonus) / 16384;
+                if (prevEnc != kNoPieceTo) {
+                    int idx = pieceKindIndex(undo.piece) * 64 + m.to;
+                    int& e = contHist_[static_cast<size_t>(prevEnc) * kContHistDim + idx];
+                    e += bonus - e * std::abs(bonus) / 16384;
+                }
+                for (const auto& fm : triedQuiets) {
+                    if (fm == m) continue;
+                    int malus = -bonus;
+                    history_[fm.from][fm.to] += malus - history_[fm.from][fm.to] * std::abs(malus) / 16384;
+                    if (prevEnc != kNoPieceTo) {
+                        int fidx = pieceKindIndex(pos.pieceAt(fm.from)) * 64 + fm.to;
+                        int& fe = contHist_[static_cast<size_t>(prevEnc) * kContHistDim + fidx];
+                        fe += malus - fe * std::abs(malus) / 16384;
+                    }
+                }
             }
             break;
         }
         moveIndex++;
     }
 
+    if (isExcludedSearch) return best;
+
+    if (haveStaticEval && !inCheck && std::abs(best) < kMateScore - kMaxPly) {
+        updateCorrectionHistory(pos, depth, staticEval, best);
+    }
+
     int flag = (best <= alphaOrig) ? 2 : (best >= beta ? 1 : 0);
-    tt_[idx] = {key, depth, best, flag, bestMove};
+    tt_[idx] = {key, depth, scoreToTT(best, ply), flag, bestMove};
 
     return best;
 }
 
-SearchResult Searcher::findBestMove(chess::Game& game, int maxDepth, int timeMs) {
+SearchResult Searcher::findBestMove(Position& pos, int maxDepth, int timeMs) {
     startTime_ = std::chrono::steady_clock::now();
     timeLimitMs_ = timeMs;
     stopped_ = false;
@@ -259,33 +530,38 @@ SearchResult Searcher::findBestMove(chess::Game& game, int maxDepth, int timeMs)
     SearchResult result;
     int prevScore = 0;
 
-    auto rootMoves = game.getValidMovesUci();
+    accTop_ = 0;
+    initAccumulator(net_, pos, &accStack_[0]);
+
+    auto rootMoves = pos.getValidMoves();
     if (rootMoves.empty()) return result;
-    result.uci = rootMoves.front();
+    BBMove bestMoveOverall = rootMoves.front();
+    result.uci = moveToUci(bestMoveOverall);
 
     for (int depth = 1; depth <= maxDepth; depth++) {
-        int windowAlpha = (depth >= 4) ? prevScore - 50 : -kInfinity;
-        int windowBeta = (depth >= 4) ? prevScore + 50 : kInfinity;
+        int aspirationDelta = 50;
+        int windowAlpha = (depth >= 4) ? prevScore - aspirationDelta : -kInfinity;
+        int windowBeta = (depth >= 4) ? prevScore + aspirationDelta : kInfinity;
 
-        std::string bestMoveThisDepth;
+        BBMove bestMoveThisDepth = kNoMove;
         int bestScoreThisDepth = -kInfinity;
         bool aborted = false;
+        int aspFails = 0;
 
         while (true) {
-            bestMoveThisDepth.clear();
+            bestMoveThisDepth = kNoMove;
             bestScoreThisDepth = -kInfinity;
             int a = windowAlpha;
             int b = windowBeta;
 
-            auto ordered = orderMoves(game, rootMoves, 0, result.uci);
-            for (const auto& uci : ordered) {
-                chess::Pos from = chess::Game::parseSquare(uci.substr(0, 2));
-                chess::Pos to = chess::Game::parseSquare(uci.substr(2, 2));
-                char promo = (uci.size() == 5) ? uci[4] : 'q';
-
-                auto undo = game.makeMove(from, to, promo);
-                int score = -negamax(game, depth - 1, 1, -b, -a, true);
-                game.unmakeMove(undo);
+            auto ordered = orderMoves(pos, rootMoves, 0, bestMoveOverall);
+            for (const auto& m : ordered) {
+                char promo = (m.promotion != ' ') ? m.promotion : 'q';
+                auto undo = pos.makeMove(m.from, m.to, promo);
+                pushMove(pos, undo);
+                int score = -negamax(pos, depth - 1, 1, -b, -a, true);
+                popMove();
+                pos.unmakeMove(undo);
 
                 if (stopped_) {
                     aborted = true;
@@ -293,15 +569,22 @@ SearchResult Searcher::findBestMove(chess::Game& game, int maxDepth, int timeMs)
                 }
                 if (score > bestScoreThisDepth) {
                     bestScoreThisDepth = score;
-                    bestMoveThisDepth = uci;
+                    bestMoveThisDepth = m;
                 }
                 if (score > a) a = score;
             }
 
             if (aborted) break;
             if (bestScoreThisDepth <= windowAlpha || bestScoreThisDepth >= windowBeta) {
-                windowAlpha = -kInfinity;
-                windowBeta = kInfinity;
+                aspFails++;
+                aspirationDelta *= 4;
+                if (aspirationDelta >= kInfinity / 2) {
+                    windowAlpha = -kInfinity;
+                    windowBeta = kInfinity;
+                } else {
+                    windowAlpha = prevScore - aspirationDelta;
+                    windowBeta = prevScore + aspirationDelta;
+                }
                 continue;
             }
             break;
@@ -309,10 +592,19 @@ SearchResult Searcher::findBestMove(chess::Game& game, int maxDepth, int timeMs)
 
         if (aborted) break;
 
-        result.uci = bestMoveThisDepth;
+        bestMoveOverall = bestMoveThisDepth;
+        result.uci = moveToUci(bestMoveOverall);
         result.score = bestScoreThisDepth;
         result.depthReached = depth;
         prevScore = bestScoreThisDepth;
+
+        static const bool verbose = std::getenv("HL_VERBOSE") != nullptr;
+        if (verbose) {
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - startTime_).count();
+            std::fprintf(stderr, "depth %d: %lldms nodes=%ld score=%d aspFails=%d\n", depth,
+                         static_cast<long long>(ms), nodeCount_, bestScoreThisDepth, aspFails);
+        }
 
         if (timeExpired()) break;
     }
