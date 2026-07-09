@@ -3,7 +3,9 @@ import torch
 
 
 class CsrSplit:
-    def __init__(self, npz, prefix):
+    def __init__(self, npz=None, prefix=None):
+        if npz is None:
+            return
         self.stm_idx = npz[f"{prefix}_stm_idx"]
         self.stm_off = npz[f"{prefix}_stm_off"]
         self.ntm_idx = npz[f"{prefix}_ntm_idx"]
@@ -33,6 +35,47 @@ class CsrSplit:
             yield stm_idx, stm_off, ntm_idx, ntm_off, buckets, targets
 
 
+def _concat_csr(splits):
+    """Physically concatenate several CsrSplits into one fast CsrSplit.
+    `splits` may repeat the same split object to oversample it."""
+    out = CsrSplit()
+    stm_idx_parts, ntm_idx_parts = [], []
+    stm_off_parts, ntm_off_parts = [], []
+    tgt_parts, buck_parts = [], []
+    stm_base = 0
+    ntm_base = 0
+    first = True
+    for sp in splits:
+        stm_idx_parts.append(sp.stm_idx)
+        ntm_idx_parts.append(sp.ntm_idx)
+        # offsets: keep the leading 0 only for the first split, shift the rest
+        so = sp.stm_off if first else sp.stm_off[1:]
+        no = sp.ntm_off if first else sp.ntm_off[1:]
+        stm_off_parts.append(so + stm_base)
+        ntm_off_parts.append(no + ntm_base)
+        stm_base += int(sp.stm_off[-1])
+        ntm_base += int(sp.ntm_off[-1])
+        tgt_parts.append(sp.targets)
+        buck_parts.append(sp.buckets)
+        first = False
+    out.stm_idx = np.concatenate(stm_idx_parts)
+    out.ntm_idx = np.concatenate(ntm_idx_parts)
+    out.stm_off = np.concatenate(stm_off_parts)
+    out.ntm_off = np.concatenate(ntm_off_parts)
+    out.targets = np.concatenate(tgt_parts)
+    out.buckets = np.concatenate(buck_parts)
+    out.n = len(out.targets)
+    return out
+
+
 def load_dataset(path):
     npz = np.load(path)
     return CsrSplit(npz, "train"), CsrSplit(npz, "val")
+
+
+def load_dataset_with_aux(path, aux_path, aux_repeat):
+    base_train, base_val = load_dataset(path)
+    aux_npz = np.load(aux_path)
+    aux_train = CsrSplit(aux_npz, "train")
+    merged_train = _concat_csr([base_train] + [aux_train] * aux_repeat)
+    return merged_train, base_val

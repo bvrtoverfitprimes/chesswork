@@ -1965,3 +1965,98 @@ finding (a search running at 10-13x fewer nodes/sec than our real NNUE still pla
 against 1800-2000 rated Stockfish), the evidence points the same direction twice now: search
 speed and pruning quality are not where the remaining Elo is. Moving to NNUE architecture and
 training-quality improvements as the next phase.
+
+## 28. Push to 2500: baseline placement, persistent UCI + Lazy SMP, and a failed eval experiment
+
+New explicit goal: reach 2500 Elo, attacking BOTH sides (NNUE eval accuracy AND search depth),
+iterating in batches without getting stuck in testing (keep making progress while matches run).
+Elo is gauged by playing the locally-downloaded Stockfish at calibrated `UCI_LimitStrength`/`UCI_Elo`
+levels 1500..3000.
+
+**Baseline placement (current threats weights, process-per-move `bestmove_cli`, 500ms/move, 6 games/level):**
+1500: 91.7% · 1800: 25.0% · 2100: 66.7% · 2400: 16.7%. The 1800/2100 inversion is small-sample
+noise (6 games can't resolve <150 Elo); honest read is **~1950-2100 Elo now** — crushes 1500,
+roughly even 1800-2100, loses to 2400. Target 2500 is ~400-600 Elo away.
+
+**Persistent UCI engine (`tools/uci_engine.cpp`, new).** Every move in the old harness cold-started
+a fresh `bestmove_cli` process, reloading the ~100MB NNUE and discarding the transposition table
+between moves. Built a real minimal-UCI front-end that keeps one `Searcher` alive for the whole game,
+so TT / history / correction-history persist across moves (a free strength gain) and weights load
+once. Speaks `uci/isready/ucinewgame/position/go (movetime|wtime/btime)/setoption/quit`, drivable by
+python-chess and any GUI. New match harness `tools/match_uci.py` (vs Stockfish) and `tools/ab_weights.py`
+(head-to-head between two of our own weight files / thread counts, for low-variance eval A/B). Weights
+path is overridable via `HL_WEIGHTS` env so two configs can play each other.
+
+**Lazy SMP multi-threaded search (the 6 idle cores).** Refactored `Searcher` to share one
+transposition table (`SharedTT`, `std::shared_ptr`) across N worker threads; helper threads search
+their own position copy with a Stockfish-style depth-skipping diversity table so they race ahead and
+seed the shared TT for the main thread. Default is 1 thread (behaviour byte-identical to before —
+single-thread node counts unchanged). `setThreads` wired to the UCI `Threads` option.
+
+Three real bugs found and fixed during SMP bring-up, each verified by the crash disappearing:
+1. **Position data race** — helpers did `Position copy = pos` *inside* the thread while the main
+   thread was already mutating `pos` (its `std::map` repetition table) via make/unmake → crash.
+   Fixed by snapshotting each helper's position copy synchronously in the main thread before any
+   search starts.
+2. **mingw `thread_local std::vector` concurrency crash** — the eval's scratch buffers
+   (`network.cpp`: the head-forward `x`/`uxq`, and the threat-augmented accumulators) were
+   `thread_local std::vector`s. Under std::thread helpers on this MSYS2 mingw build they segfaulted
+   intermittently even on a 50ms search (a known mingw TLS-with-nontrivial-ctor hazard). Confirmed by
+   bisection: a no-op helper never crashed, a helper running the real eval crashed ~50% of runs, and
+   switching those buffers to plain stack locals made 8/8 runs clean. Kept stack-local (the per-call
+   allocation is negligible against the threat computation; single-thread node counts are identical).
+3. **Ownership-ordering hazard** in the (guarded) spawn loop — objects are now moved into their owning
+   vectors *before* the thread is spawned, so a thread-creation throw can never free an object a
+   running helper still references. Helper bodies and the whole spawn loop are wrapped so resource
+   pressure degrades gracefully to fewer threads / single-thread instead of taking down the process.
+
+An important environment note surfaced here: the earlier SMP crashes were reproducible **only while
+the training run was consuming ~5-6 cores and RAM was at ~22% free** — a failed page commit under
+memory pressure surfaces as an uncatchable access violation. With the machine free (6GB+ free), SMP
+runs clean. **Measured depth-at-time (machine free, 3s budget):** 1 thread reaches depth 11 on both
+the standard easy and hard reference positions; **6 threads reaches depth 12 (easy) / 13 (hard)** —
+a real +1-2 plies. A 6-thread-vs-1-thread game match (same weights) is running to confirm the Elo
+value.
+
+**A failed eval experiment, recorded honestly.** Hypothesis: the tactical-sanity magnitude
+compression (§24/§25 — "up a queen" scored far below its material value) is costing strength, so
+train it out. Implemented a hybrid loss (`train.py --mse-weight`: WDL + an eval-space MSE term) plus
+heavy oversampling of the decisive curriculum positions (`--aux-dataset`/`--aux-repeat`,
+`dataset.py` CSR-concatenation with a verified offset test), warm-started from the current threats
+model. It **worked on the metrics and failed on strength**: val correlation jumped 0.656 → 0.745 and
+val MAE improved, but a 30-game head-to-head of the epoch-1 hybrid weights vs the current production
+weights (`ab_weights.py`, 400ms) came back **2.0/9 (~22%) — clearly weaker** before it was stopped.
+The lesson matches why Stockfish trains pure-WDL: magnitude calibration and decisive-position
+oversampling improved a *val metric* that does not track move-ranking quality, and the aggressive
+mix distorted the middlegame judgement that actually wins games. Production weights were never touched
+(the hybrid net was exported to a separate file). **Takeaway carried forward: judge eval changes by
+games, not by val correlation; the principled eval lever is a better/deeper teacher, not loss tricks.**
+
+## 29. Blunder-mining active learning (hard-example) — first iteration WON on games
+
+Per the user's idea: instead of blindly relabeling a generic corpus, target the model's
+*actual* weak points. New pipeline `training/data/mine_blunders.py`:
+1. Play games (our persistent `uci_engine` vs Stockfish at a calibrated Elo), record every ply.
+2. Grade every position with Stockfish (depth 12) and flag positions where OUR move dropped
+   our-side eval by >= 150cp — i.e. our engine blundered. **Mined from ALL games, including
+   ones we won/drew** (per the user: an unpunished blunder is still a real weak point).
+3. Perturb each blunder position into 10 legal near-neighbours (one random piece added / removed /
+   relocated on either side) for generalization.
+4. Deep-grade (depth 14) the blunders + perturbations → a training jsonl of weak-point positions.
+
+Ran two instances in parallel (vs SF-2200 and vs SF-1900, using otherwise-idle cores): **~400
+blunders → 4,389 deep-graded weak-point positions**. The SF-1900 run (games we mostly win) still
+produced 194 blunders, directly confirming the "even the wins" intuition.
+
+**Fine-tune** (`training/finetune_blunders.sh`): pure-WDL (no magnitude tricks — §28's lesson),
+warm-started from the current weights, on a 1M-row base anchor (`subset_dataset.py`) + the
+weak-point set oversampled 30x (~125k), low LR 2e-4, 2 epochs. General-position val MAE even
+*improved* (0.4168 → 0.4087), an early sign it sharpened weak points without distorting normal play
+(unlike §28's hybrid). **A/B vs the previous production weights (threads=1, isolating the eval):
+7.5/8 (~94%) — a decisive, unambiguous win**, the mirror image of §28's failed hybrid (2/9).
+Adopted as the new production `nnue_weights.bin` (previous weights backed up to
+`nnue_weights_pre_blunderft.bin`). The head-to-head margin overstates the true external Elo gain
+(same engine, so the new eval repeatedly exploits the old one's specific blind spot), so a fresh
+Stockfish sweep (new eval + SMP) is running to measure the real jump. This validated the
+active-learning loop end-to-end; it is now repeatable: mine the new weights' blunders → fine-tune →
+repeat.

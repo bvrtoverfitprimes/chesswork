@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include <thread>
 
 namespace human_limit {
 
@@ -95,7 +97,16 @@ constexpr int kDeltaMargin = 200;
 
 }
 
-Searcher::Searcher(const Network& net) : net_(net) {
+Searcher::Searcher(const Network& net)
+    : net_(net), ttShared_(std::make_shared<SharedTT>()) {
+    tt_ = ttShared_->entries.data();
+    for (auto& row : killers_) row[0] = row[1] = kNoMove;
+    for (auto& v : prevMovePieceTo_) v = kNoPieceTo;
+}
+
+Searcher::Searcher(const Network& net, std::shared_ptr<SharedTT> sharedTT)
+    : net_(net), ttShared_(std::move(sharedTT)), isHelper_(true) {
+    tt_ = ttShared_->entries.data();
     for (auto& row : killers_) row[0] = row[1] = kNoMove;
     for (auto& v : prevMovePieceTo_) v = kNoPieceTo;
 }
@@ -166,6 +177,7 @@ void Searcher::pushNull() {
 void Searcher::popNull() { accTop_--; }
 
 bool Searcher::timeExpired() {
+    if (ttShared_ && ttShared_->stop.load(std::memory_order_relaxed)) return true;
     if (timeLimitMs_ <= 0) return false;
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::steady_clock::now() - startTime_)
@@ -522,6 +534,56 @@ int Searcher::negamax(Position& pos, int depth, int ply, int alpha, int beta, bo
 }
 
 SearchResult Searcher::findBestMove(Position& pos, int maxDepth, int timeMs) {
+    if (numThreads_ <= 1) {
+        return searchInternal(pos, maxDepth, timeMs, true);
+    }
+
+    // Lazy SMP: helper threads share this searcher's transposition table and
+    // search their own copy of the position, diverging via TT races to help the
+    // main thread reach greater depth. Only the main thread's result is used.
+    ttShared_->stop.store(false, std::memory_order_relaxed);
+    std::vector<std::thread> helpers;
+    std::vector<std::unique_ptr<Searcher>> workers;
+    std::vector<std::unique_ptr<Position>> posCopies;
+    // Snapshot each helper's own position copy here in the main thread, before
+    // any search starts mutating `pos`, so there is no race on the shared object.
+    // Spawning is guarded: if the machine is under resource pressure and a thread
+    // (or its allocations) can't be created, we degrade gracefully to fewer
+    // helpers / single-thread rather than taking down the whole process.
+    try {
+        for (int t = 1; t < numThreads_; t++) {
+            auto worker = std::make_unique<Searcher>(net_, ttShared_);
+            worker->setHelperId(t);
+            auto pc = std::make_unique<Position>(pos);
+            Searcher* w = worker.get();
+            Position* pcp = pc.get();
+            // Own the objects before spawning: if thread creation throws, they
+            // stay alive (owned by the vectors); the running helpers always
+            // reference heap objects that outlive them.
+            workers.push_back(std::move(worker));
+            posCopies.push_back(std::move(pc));
+            helpers.emplace_back([w, pcp, maxDepth, timeMs]() {
+                try {
+                    w->searchInternal(*pcp, maxDepth, timeMs, false);
+                } catch (...) {
+                    // A helper failing must never affect the main result.
+                }
+            });
+        }
+    } catch (...) {
+        // Could not spawn all helpers; continue with however many we have.
+    }
+
+    SearchResult result = searchInternal(pos, maxDepth, timeMs, true);
+    ttShared_->stop.store(true, std::memory_order_relaxed);
+    for (auto& h : helpers) {
+        if (h.joinable()) h.join();
+    }
+    ttShared_->stop.store(false, std::memory_order_relaxed);
+    return result;
+}
+
+SearchResult Searcher::searchInternal(Position& pos, int maxDepth, int timeMs, bool reportVerbose) {
     startTime_ = std::chrono::steady_clock::now();
     timeLimitMs_ = timeMs;
     stopped_ = false;
@@ -538,10 +600,21 @@ SearchResult Searcher::findBestMove(Position& pos, int maxDepth, int timeMs) {
     BBMove bestMoveOverall = rootMoves.front();
     result.uci = moveToUci(bestMoveOverall);
 
+    // Lazy SMP thread diversity: helper threads skip a per-thread pattern of
+    // depths so they race ahead to deeper iterations and seed the shared TT for
+    // the main thread, instead of all threads duplicating the same search.
+    static const int kSkipSize[20] = {1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4};
+    static const int kSkipPhase[20] = {0, 1, 0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 7};
+
     for (int depth = 1; depth <= maxDepth; depth++) {
+        if (isHelper_) {
+            int i = (helperId_ - 1) % 20;
+            if (((depth + kSkipPhase[i]) / kSkipSize[i]) % 2 != 0) continue;
+        }
+        bool useAsp = !isHelper_ && depth >= 4;
         int aspirationDelta = 50;
-        int windowAlpha = (depth >= 4) ? prevScore - aspirationDelta : -kInfinity;
-        int windowBeta = (depth >= 4) ? prevScore + aspirationDelta : kInfinity;
+        int windowAlpha = useAsp ? prevScore - aspirationDelta : -kInfinity;
+        int windowBeta = useAsp ? prevScore + aspirationDelta : kInfinity;
 
         BBMove bestMoveThisDepth = kNoMove;
         int bestScoreThisDepth = -kInfinity;
@@ -598,8 +671,8 @@ SearchResult Searcher::findBestMove(Position& pos, int maxDepth, int timeMs) {
         result.depthReached = depth;
         prevScore = bestScoreThisDepth;
 
-        static const bool verbose = std::getenv("HL_VERBOSE") != nullptr;
-        if (verbose) {
+        static const bool verboseEnv = std::getenv("HL_VERBOSE") != nullptr;
+        if (verboseEnv && reportVerbose) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - startTime_).count();
             std::fprintf(stderr, "depth %d: %lldms nodes=%ld score=%d aspFails=%d\n", depth,

@@ -50,8 +50,6 @@ private:
     std::vector<float> fc3w_;
     std::vector<float> fc3b_;
 
-    mutable std::vector<float> scratchX_;
-
     float headForward(const std::vector<float>& x, int bucket) const;
 };
 

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,28 +22,53 @@ struct SearchResult {
 
 constexpr chess::bitboard::BBMove kNoMove{-1, -1, ' '};
 
+struct TTEntry {
+    uint64_t key = 0;
+    int depth = -1;
+    int score = 0;
+    int flag = 0;
+    chess::bitboard::BBMove bestMove = kNoMove;
+};
+
+// Shared transposition table for Lazy SMP: all worker threads probe/store into
+// the same table. Concurrent access is intentionally lock-free; torn reads are
+// benign (the key check rejects mismatches, and a stale bestMove is only an
+// ordering hint that is validated against the legal move list).
+struct SharedTT {
+    static constexpr size_t kTTSize = 1u << 22;
+    std::vector<TTEntry> entries = std::vector<TTEntry>(kTTSize);
+    std::atomic<bool> stop{false};
+};
+
 class Searcher {
 public:
     explicit Searcher(const Network& net);
+    // Helper-thread constructor: shares an existing transposition table.
+    Searcher(const Network& net, std::shared_ptr<SharedTT> sharedTT);
 
     SearchResult findBestMove(chess::bitboard::Position& pos, int maxDepth, int timeMs);
+
+    void setThreads(int n) { numThreads_ = n < 1 ? 1 : n; }
 
 private:
     const Network& net_;
 
-    struct TTEntry {
-        uint64_t key = 0;
-        int depth = -1;
-        int score = 0;
-        int flag = 0;
-        chess::bitboard::BBMove bestMove = kNoMove;
-    };
-
-    static constexpr size_t kTTSize = 1u << 22;
+    static constexpr size_t kTTSize = SharedTT::kTTSize;
     static constexpr int kMaxPly = 128;
     static constexpr int kMaxAccDepth = 512;
 
-    std::vector<TTEntry> tt_ = std::vector<TTEntry>(kTTSize);
+    std::shared_ptr<SharedTT> ttShared_;
+    TTEntry* tt_ = nullptr;
+    int numThreads_ = 1;
+    bool isHelper_ = false;
+    int helperId_ = 0;
+
+public:
+    void setHelperId(int id) { helperId_ = id; }
+
+private:
+
+    SearchResult searchInternal(chess::bitboard::Position& pos, int maxDepth, int timeMs, bool reportVerbose);
     chess::bitboard::BBMove killers_[kMaxPly][2];
     int history_[64][64] = {};
 

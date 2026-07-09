@@ -60,8 +60,7 @@ float Network::headForward(const std::vector<float>& x, int bucket) const {
     float xMaxAbs = 1e-6f;
     for (int j = 0; j < dim; j++) xMaxAbs = std::max(xMaxAbs, std::abs(x[j]));
     const float xScale = 63.0f / xMaxAbs;
-    thread_local std::vector<uint8_t> uxq;
-    uxq.resize(static_cast<size_t>(dim));
+    std::vector<uint8_t> uxq(static_cast<size_t>(dim));
     for (int j = 0; j < dim; j++) {
         int q = static_cast<int>(std::lround(x[j] * xScale));
         q = std::clamp(q, -63, 63);
@@ -138,7 +137,7 @@ float Network::forward(const FeatureSet& f, int bucket) const {
 
 float Network::forwardFromAccumulators(const std::vector<float>& stmAcc, const std::vector<float>& ntmAcc,
                                         int bucket) const {
-    std::vector<float>& x = scratchX_;
+    std::vector<float> x(static_cast<size_t>(2 * hidden_));
     for (int h = 0; h < hidden_; h++) {
         x[h] = stmAcc[h];
         x[hidden_ + h] = ntmAcc[h];
@@ -168,10 +167,8 @@ double Network::evaluateFromAccumulatorsWithThreats(const std::vector<float>& wh
                                                       const std::vector<float>& blackAcc,
                                                       const chess::BoardArray& board, chess::Color turn,
                                                       int bucket) const {
-    thread_local std::vector<float> whiteWithThreats;
-    thread_local std::vector<float> blackWithThreats;
-    whiteWithThreats = whiteAcc;
-    blackWithThreats = blackAcc;
+    std::vector<float> whiteWithThreats = whiteAcc;
+    std::vector<float> blackWithThreats = blackAcc;
 
     PerspectiveContext whiteCtx = computePerspectiveContext(board, true);
     PerspectiveContext blackCtx = computePerspectiveContext(board, false);
@@ -201,7 +198,6 @@ bool Network::load(const std::string& path) {
 
     hidden_ = hidden;
     numBuckets_ = numBuckets;
-    scratchX_.assign(2 * hidden_, 0.0f);
     embedding_.resize(static_cast<size_t>(kNumFeatures) * hidden_);
 
     fc1w_.resize(static_cast<size_t>(numBuckets_) * kHeadWidth * 2 * hidden_);

@@ -16,6 +16,11 @@ engine_selfplay: engine_selfplay.cpp $(CHESS_SRC) $(BITBOARD_SRC) $(HUMAN_LIMIT_
 bestmove_cli: tools/bestmove_cli.cpp $(CHESS_SRC) $(BITBOARD_SRC) $(HUMAN_LIMIT_SRC) $(ANCIENT_ENGINE_SRC) $(OLD_ENGINE_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tools/bestmove_cli tools/bestmove_cli.cpp $(CHESS_SRC) $(BITBOARD_SRC) $(HUMAN_LIMIT_SRC) $(ANCIENT_ENGINE_SRC) $(OLD_ENGINE_SRC)
 
+# Persistent UCI front-end for human_limit (keeps TT/history across moves, supports
+# Lazy SMP via the Threads option). Needs threads + a larger per-thread stack for deep recursion.
+uci_engine: tools/uci_engine.cpp $(CHESS_SRC) $(BITBOARD_SRC) $(HUMAN_LIMIT_SRC) engine/human_limit/search.h engine/human_limit/network.h
+	$(CXX) $(CXXFLAGS) -pthread -Wl,--stack,33554432 -I. -o tools/uci_engine tools/uci_engine.cpp $(CHESS_SRC) $(BITBOARD_SRC) $(HUMAN_LIMIT_SRC)
+
 eval_cli: tools/eval_cli.cpp $(CHESS_SRC) $(HUMAN_LIMIT_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tools/eval_cli tools/eval_cli.cpp $(CHESS_SRC) $(HUMAN_LIMIT_SRC)
 
@@ -38,9 +43,9 @@ test: tests/test_chess.cpp tests/simple_demo.cpp tests/test_nnue_features.cpp te
 	./tests/test_bitboard_cross_validate
 	./tests/test_accumulator_bb
 
-all: engine_gameplay engine_selfplay test
+all: engine_gameplay engine_selfplay uci_engine test
 
 clean:
-	rm -f engine_gameplay engine_selfplay train_human_limit tools/bestmove_cli tools/eval_cli tests/test_chess tests/simple_demo tests/test_nnue_features tests/test_accumulator tests/test_fast_legality tests/test_bitboard_attacks tests/test_bitboard_perft tests/test_bitboard_cross_validate tests/test_accumulator_bb
+	rm -f engine_gameplay engine_selfplay train_human_limit tools/bestmove_cli tools/uci_engine tools/eval_cli tests/test_chess tests/simple_demo tests/test_nnue_features tests/test_accumulator tests/test_fast_legality tests/test_bitboard_attacks tests/test_bitboard_perft tests/test_bitboard_cross_validate tests/test_accumulator_bb
 
 .PHONY: all test clean
