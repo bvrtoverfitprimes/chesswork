@@ -38,6 +38,16 @@ PerspectiveContext computePerspectiveContext(const chess::BoardArray& board, boo
     return {perspIsWhite, mirror, kr * 4 + kc};
 }
 
+PerspectiveContext computePerspectiveContextBB(const chess::bitboard::Position& pos, bool perspIsWhite) {
+    int kingSq = pos.kingSquare(perspIsWhite ? chess::Color::White : chess::Color::Black);
+    int kr = 7 - chess::bitboard::rankOf(kingSq);
+    int kc = chess::bitboard::fileOf(kingSq);
+    transform(kr, kc, !perspIsWhite, false);
+    bool mirror = kc >= 4;
+    if (mirror) kc = 7 - kc;
+    return {perspIsWhite, mirror, kr * 4 + kc};
+}
+
 int featureIndexForPiece(const PerspectiveContext& ctx, int r, int c, char piece) {
     if (piece == ' ') return -1;
     char pl = std::tolower(static_cast<unsigned char>(piece));
@@ -182,6 +192,41 @@ std::vector<ThreatFact> computeThreatFacts(const chess::BoardArray& board) {
             seen[side][pieces[i].typeIdx][pieces[j].typeIdx] = true;
 
             facts.push_back({pieces[i].isWhite, pieces[i].typeIdx, pieces[j].typeIdx});
+        }
+    }
+    return facts;
+}
+
+std::vector<ThreatFact> computeThreatFactsBB(const chess::bitboard::Position& pos) {
+    using chess::bitboard::Bitboard;
+    using chess::bitboard::popLsb;
+
+    bool seen[2][kNumThreatPieceTypes][kNumThreatPieceTypes] = {};
+    std::vector<ThreatFact> facts;
+    Bitboard allOcc = pos.allOccupiedBitboard();
+
+    for (int victimIsWhite = 0; victimIsWhite <= 1; victimIsWhite++) {
+        chess::Color victimColor = victimIsWhite ? chess::Color::White : chess::Color::Black;
+        chess::Color attackerColor = victimIsWhite ? chess::Color::Black : chess::Color::White;
+        int attackerSideIdx = victimIsWhite ? 1 : 0;
+        bool attackerIsWhite = !victimIsWhite;
+        Bitboard attackerOcc = pos.occupiedBitboard(attackerColor);
+
+        Bitboard victims = pos.occupiedBitboard(victimColor);
+        while (victims) {
+            int vSq = popLsb(victims);
+            int victimType = threatTypeIndex(
+                static_cast<char>(std::tolower(static_cast<unsigned char>(pos.pieceAt(vSq)))));
+
+            Bitboard attackers = pos.attackersTo(vSq, allOcc) & attackerOcc;
+            while (attackers) {
+                int aSq = popLsb(attackers);
+                int attackerType = threatTypeIndex(
+                    static_cast<char>(std::tolower(static_cast<unsigned char>(pos.pieceAt(aSq)))));
+                if (seen[attackerSideIdx][attackerType][victimType]) continue;
+                seen[attackerSideIdx][attackerType][victimType] = true;
+                facts.push_back({attackerIsWhite, attackerType, victimType});
+            }
         }
     }
     return facts;

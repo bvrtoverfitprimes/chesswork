@@ -72,9 +72,17 @@ def play_games(n_games, our_ms, sf_ms, sf_elo, threads, max_plies):
     return games
 
 
-def detect_blunders(games, grade_depth, workers, swing_thresh, skip_won):
+def detect_blunders(games, grade_depth, workers, swing_thresh, skip_won, before_ceiling=600):
     """Grade every position of non-won games; return FENs of positions where OUR
-    move dropped our eval by >= swing_thresh (i.e. our blunder input positions)."""
+    move dropped our eval by >= swing_thresh (i.e. our blunder input positions).
+
+    `before_ceiling` filters out positions that were already decisively lost/won
+    (|our_advantage_before| > ceiling) before our move. In an already-hopeless
+    endgame, a shallow teacher search often hasn't found the forced mate yet, so
+    it under-scores the position and any move looks like a "swing" once a deeper
+    search resolves it -- that's an artifact of teacher depth (see WORKLOG), not
+    a real mistake. Restricting to still-contestable positions targets genuine
+    turning-point blunders instead."""
     # gather all FENs to grade, remembering their (game, ply) location
     index = []  # (gi, pi)
     fens = []
@@ -108,10 +116,13 @@ def detect_blunders(games, grade_depth, workers, swing_thresh, skip_won):
                 continue
             adv_before = our_advantage_cp(by_fen[fen_before], game["we_white"])
             adv_after = our_advantage_cp(by_fen[fen_after], game["we_white"])
+            if abs(adv_before) > before_ceiling:
+                continue  # already decisively lost/won before our move; skip
             if adv_before - adv_after >= swing_thresh:
                 blunders.append(fen_before)
     print(f"detected {len(blunders)} blunder positions "
-          f"(eval dropped >= {swing_thresh}cp on our move)", flush=True)
+          f"(eval dropped >= {swing_thresh}cp on our move, "
+          f"|before| <= {before_ceiling}cp)", flush=True)
     return blunders
 
 
@@ -174,6 +185,9 @@ def main():
     p.add_argument("--deep-depth", type=int, default=16, help="depth for final training labels")
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--swing-thresh", type=int, default=150)
+    p.add_argument("--before-ceiling", type=int, default=600,
+                    help="skip positions already this decisive before our move (avoids "
+                         "flagging already-hopeless mate-length noise as blunders)")
     p.add_argument("--variants", type=int, default=10)
     # Mine our blunders from ALL games by default: a move that dropped our eval is
     # a weak point even in games we won/drew (the opponent just didn't punish it).
@@ -200,7 +214,8 @@ def main():
     lost = sum(1 for g in games if g["result"] == 0.0)
     print(f"games: {won}W / {drew}D / {lost}L", flush=True)
 
-    blunders = detect_blunders(games, args.grade_depth, args.workers, args.swing_thresh, args.skip_won)
+    blunders = detect_blunders(games, args.grade_depth, args.workers, args.swing_thresh,
+                                args.skip_won, args.before_ceiling)
     if not blunders:
         print("no blunders found; nothing to train on.", flush=True)
         return

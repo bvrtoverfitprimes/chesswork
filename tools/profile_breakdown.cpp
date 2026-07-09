@@ -139,5 +139,111 @@ int main(int argc, char** argv) {
                   << (double(elapsedUs) / iterations) << "us/call\n";
     }
 
+    // 5. pos.toBoardArray() alone (bitboard -> mailbox conversion, redone every eval call).
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        volatile int sink = 0;
+        for (int i = 0; i < iterations; i++) {
+            auto& pos = positions[i % positions.size()];
+            auto board = pos.toBoardArray();
+            sink += board[0][0];
+        }
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "pos.toBoardArray() only: " << iterations << " calls in " << elapsedUs << "us -> "
+                  << (double(elapsedUs) / iterations) << "us/call\n";
+    }
+
+    // 6. computePerspectiveContext() alone (called twice per eval: once per side).
+    {
+        auto& pos0 = positions[0];
+        auto board = pos0.toBoardArray();
+        auto t0 = std::chrono::steady_clock::now();
+        volatile int sink = 0;
+        for (int i = 0; i < iterations; i++) {
+            auto ctx = human_limit::computePerspectiveContext(board, i % 2 == 0);
+            sink += ctx.kingBucket;
+        }
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "computePerspectiveContext() only: " << iterations << " calls in " << elapsedUs << "us -> "
+                  << (double(elapsedUs) / iterations) << "us/call\n";
+    }
+
+    // 7. computeThreatFacts() alone (O(pieces^2) mailbox ray-walk, called once per eval).
+    {
+        auto& pos0 = positions[0];
+        auto board = pos0.toBoardArray();
+        auto t0 = std::chrono::steady_clock::now();
+        volatile size_t sink = 0;
+        for (int i = 0; i < iterations; i++) {
+            auto facts = human_limit::computeThreatFacts(board);
+            sink += facts.size();
+        }
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "computeThreatFacts() only: " << iterations << " calls in " << elapsedUs << "us -> "
+                  << (double(elapsedUs) / iterations) << "us/call (sink=" << sink << ")\n";
+    }
+
+    // 7b. computeThreatFactsBB() alone -- bitboard-native replacement, no mailbox ray-walk.
+    {
+        auto& pos0 = positions[0];
+        auto t0 = std::chrono::steady_clock::now();
+        volatile size_t sink = 0;
+        for (int i = 0; i < iterations; i++) {
+            auto facts = human_limit::computeThreatFactsBB(pos0);
+            sink += facts.size();
+        }
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "computeThreatFactsBB() only: " << iterations << " calls in " << elapsedUs << "us -> "
+                  << (double(elapsedUs) / iterations) << "us/call (sink=" << sink << ")\n";
+    }
+
+    // 8. Full evaluateFromAccumulatorsWithThreats() -- the ACTUAL hot path used by Searcher::evalWhiteRelative.
+    {
+        auto& pos0 = positions[0];
+        human_limit::Accumulator acc;
+        human_limit::initAccumulator(net, pos0, &acc);
+        auto t0 = std::chrono::steady_clock::now();
+        volatile double sink = 0;
+        for (int i = 0; i < iterations; i++) {
+            int bucket = human_limit::outputBucketFromPieceCount(acc.pieceCount);
+            sink += net.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos0, pos0.turn(), bucket);
+        }
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "FULL evaluateFromAccumulatorsWithThreats() (actual search hot path): " << iterations
+                  << " calls in " << elapsedUs << "us -> " << (double(elapsedUs) / iterations)
+                  << "us/call (sink=" << sink << ")\n";
+    }
+
+    // 9. inCheck() and see() alone -- pruning-side board queries (already bitboard-based; expected cheap).
+    {
+        auto& pos = positions[0];
+        auto t0 = std::chrono::steady_clock::now();
+        volatile bool sink = false;
+        for (int i = 0; i < iterations; i++) sink = pos.inCheck();
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "pos.inCheck() only: " << iterations << " calls in " << elapsedUs << "us -> "
+                  << (double(elapsedUs) / iterations) << "us/call\n";
+    }
+    {
+        auto& pos = positions[0];
+        auto moves = pos.getValidMoves();
+        auto t0 = std::chrono::steady_clock::now();
+        volatile int sink = 0;
+        for (int i = 0; i < iterations; i++) {
+            auto& m = moves[i % moves.size()];
+            sink += pos.see(m.from, m.to);
+        }
+        auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - t0).count();
+        std::cout << "pos.see() only: " << iterations << " calls in " << elapsedUs << "us -> "
+                  << (double(elapsedUs) / iterations) << "us/call\n";
+    }
+
     return 0;
 }

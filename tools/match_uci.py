@@ -41,28 +41,54 @@ def main():
     parser.add_argument("--max-plies", type=int, default=240)
     args = parser.parse_args()
 
-    our = chess.engine.SimpleEngine.popen_uci(OUR)
+    # Default python-chess protocol timeout (10s) is tighter than our_time_ms can
+    # need once SMP thread spawn/join overhead is added under system load; give
+    # it real headroom rather than crashing the whole sweep on one slow move.
+    engine_timeout = max(30.0, 4 * args.our_time_ms / 1000)
+    our = chess.engine.SimpleEngine.popen_uci(OUR, timeout=engine_timeout)
     if args.threads > 1:
         try:
             our.configure({"Threads": args.threads})
         except Exception:
             pass
-    sf = chess.engine.SimpleEngine.popen_uci(SF_PATH)
+    sf = chess.engine.SimpleEngine.popen_uci(SF_PATH, timeout=engine_timeout)
     sf.configure({"UCI_LimitStrength": True, "UCI_Elo": args.elo, "Threads": 1})
 
     score = 0.0
+    played = 0
     for g in range(args.games):
         our_is_white = (g % 2 == 0)
-        r = play_game(our, args.our_time_ms, sf, args.sf_time_ms, our_is_white,
-                      args.max_plies, object())
+        try:
+            r = play_game(our, args.our_time_ms, sf, args.sf_time_ms, our_is_white,
+                          args.max_plies, object())
+        except Exception as e:
+            print(f"game {g+1}: ERROR ({e}) - skipping, restarting engines", flush=True)
+            try:
+                our.quit()
+            except Exception:
+                pass
+            try:
+                sf.quit()
+            except Exception:
+                pass
+            our = chess.engine.SimpleEngine.popen_uci(OUR, timeout=engine_timeout)
+            if args.threads > 1:
+                try:
+                    our.configure({"Threads": args.threads})
+                except Exception:
+                    pass
+            sf = chess.engine.SimpleEngine.popen_uci(SF_PATH, timeout=engine_timeout)
+            sf.configure({"UCI_LimitStrength": True, "UCI_Elo": args.elo, "Threads": 1})
+            continue
         score += r
+        played += 1
         side = "w" if our_is_white else "b"
-        print(f"game {g+1}: human({side}) vs sf{args.elo}: {r}  running={score}/{g+1}", flush=True)
+        print(f"game {g+1}: human({side}) vs sf{args.elo}: {r}  running={score}/{played}", flush=True)
 
     our.quit()
     sf.quit()
-    pct = 100.0 * score / args.games
-    print(f"\nRESULT human {score}/{args.games} ({pct:.1f}%) vs Stockfish UCI_Elo={args.elo} "
+    pct = 100.0 * score / played if played else 0.0
+    print(f"\nRESULT human {score}/{played} ({pct:.1f}%) vs Stockfish UCI_Elo={args.elo} "
           f"@ {args.our_time_ms}ms (threads={args.threads})", flush=True)
 
 

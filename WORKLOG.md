@@ -2060,3 +2060,106 @@ Adopted as the new production `nnue_weights.bin` (previous weights backed up to
 Stockfish sweep (new eval + SMP) is running to measure the real jump. This validated the
 active-learning loop end-to-end; it is now repeatable: mine the new weights' blunders → fine-tune →
 repeat.
+
+## 30. Overnight blunder collection (5h), a mate-depth mining artifact caught by direct inspection,
+    and active-learning iteration 2 — adopted (68.3% vs iteration 1)
+
+Per direct instruction, launched an unattended 5-hour version of the blunder-mining loop
+(`training/data/collect_overnight.py`, new): alternates 4-game batches vs Stockfish@2100 and
+Stockfish@1800 (300ms/move), grades every position, flags OUR moves that drop our own eval by
+>=150cp (from ALL games, including wins/draws — an unpunished blunder is still a real weak point),
+perturbs each into 10 near-neighbours, deep-grades everything (depth 14), and appends immediately
+after every cycle so a crash/stop loses at most one in-progress cycle. A running summary json gives
+an at-a-glance status. Smoke-tested end-to-end (short budget) before committing to 5 hours unattended.
+
+**Result: 480 games (296W/122D/62L), 1,514 blunders detected, 16,654 deep-graded weak-point
+positions** written to `training/data/raw/overnight_blunders.jsonl`.
+
+**A real methodology bug caught by direct inspection of actual examples, not by metrics.** Asked to
+show concrete blunder examples (position + Stockfish eval + our own engine's raw eval, via a new
+`tools/show_blunder_examples.py`), one flagged "blunder" (`e6d7` in a rook-up endgame) was checked
+against a much deeper external analysis (depth 59) and turned out to be **the best available
+defense — a forced mate (M7) that could not be avoided by any legal move (the alternatives were
+M6)**. Our depth-14 "before" grading hadn't found the forced mate yet (scored it as a merely-large
+866cp rather than recognizing it was already lost by force), so any move looked like a "swing" once
+a later, deeper-in-the-line score resolved toward the mate value — an artifact of teacher search
+depth in already-decided positions, not a genuine mistake. **Fix**: `detect_blunders()` gained a
+`before_ceiling` parameter (default 600cp) — positions already this decisive before our move are
+skipped entirely, so mining targets genuine turning-point blunders (still-contestable positions that
+we made worse) instead of "which flavor of forced loss" noise in dead-lost endgames. Wired into both
+`mine_blunders.py` and `collect_overnight.py`. Not applied retroactively to already-collected data
+(the position labels themselves are still directionally valid even where the "blunder" framing was
+imprecise), but governs all future mining rounds.
+
+**Active-learning iteration 2** (`training/finetune_blunders.sh`, updated to warm-start from the
+current best checkpoint and combine all mined weak-point sets including the overnight collection):
+combined 21,043 weak-point positions (2,255 + 2,134 from the first mining session + 16,654
+overnight), pure-WDL loss, 1M-row base anchor + weak points oversampled 10x, warm-started from the
+iteration-1 checkpoint (`blunder_ft.pt`). All 4 epochs improved (val_mae 0.4113→0.4100, val_corr
+0.660→0.670) → `training/checkpoints/blunder_ft2.pt`.
+
+**A/B against the iteration-1 production weights** (`tools/ab_weights.py`, 30 games, 500ms,
+threads=1): opened rocky (5.5/10, 55% at the 10-game mark — genuinely close to a coin flip, matched
+a stated hunch that this iteration might not be better) but the full 30-game sample resolved to
+**20.5/30 (68.3%)** — a real, if less dramatic than iteration 1's 94%, improvement. **Adopted** as
+the new production `nnue_weights.bin` (previous weights backed up to `nnue_weights_pre_ft2.bin`).
+The mine→fine-tune→A/B loop has now been run twice end-to-end, both times judged by games rather
+than val metrics, matching the discipline established in §28.
+
+## 31. Eval hot-path speedup: bitboard-native threat features, ~1.9x per-node, real depth-at-time gain
+
+Direct measurement requested of "how many ms to reach each search depth" surfaced a specific,
+quantified target rather than a vague slowness complaint. Profiled the actual per-node eval hot path
+(`tools/profile_breakdown.cpp`, extended with new sections) used by `Searcher::evalWhiteRelative`:
+
+| component | cost | share of ~6.7-6.9us total |
+|---|---|---|
+| `pos.toBoardArray()` (bitboard -> mailbox) | 0.24us | 3.5% |
+| `computePerspectiveContext()` (x2) | 0.08us | 1% |
+| `computeThreatFacts()` | 3.13-3.72us | **~47%** |
+| NNUE head forward (the actual neural net math) | 2.83-2.91us | 43% |
+
+`computeThreatFacts()` — the NNUE's "who attacks whom" feature computation added in §25 — was
+costing almost as much as the entire neural network forward pass itself, because it ran on a
+mailbox (8x8 array) board using geometric ray-walking (O(pieces²) pairwise checks), when the
+existing bitboard `Position` already has O(1) attack tables (`attackersTo()`, the same ones `see()`/
+`inCheck()` use) that answer "who attacks this square" without a geometric walk. (Pruning-side board
+queries — `inCheck()` 0.004us, `see()` 0.022us, `getValidMoves()` ~1.3-1.6us — were already fast and
+bitboard-based; the bottleneck was specifically the NNUE input pipeline, not search/pruning
+plumbing.)
+
+**Fix, safety-first per this project's established discipline**: wrote `computeThreatFactsBB()` and
+`computePerspectiveContextBB()` (`engine/human_limit/nnue_features.h/.cpp`) operating directly on
+`chess::bitboard::Position` (two new small public accessors added: `occupiedBitboard()`,
+`allOccupiedBitboard()`, `kingSquare()`) instead of a mailbox `BoardArray`. Verified bit-for-bit
+identical to the original mailbox implementations across 1,343 positions (20 random self-play walks
++ 9 hand-crafted tactical/pin/double-check/endgame/promotion positions, each walked forward several
+plies) via a new permanent test, `tests/test_threat_facts_cross_validate.cpp`, wired into `make
+test`. Only after that passed was `Network::evaluateFromAccumulatorsWithThreats()` retargeted to take
+the `Position` directly and use both fast paths, eliminating the `toBoardArray()` call from this
+function entirely. The original mailbox-based `computeThreatFacts()`/`computePerspectiveContext()`
+remain in place as the verified ground truth (the array-based/testing-oracle pattern used
+throughout this project).
+
+**Measured result**: full `evaluateFromAccumulatorsWithThreats()` (the actual search hot path) went
+from **6.72-6.88us/call to 3.59us/call — roughly 1.9x** faster per node, isolated in
+`profile_breakdown`. Full test suite (11 binaries including the new cross-validation test) passes
+unchanged. Real-search depth-at-time (30s budget, same two reference positions used throughout this
+project):
+
+| position | depth 15 before -> after | depth 16 before -> after |
+|---|---|---|
+| easy (quiet) | 17.1s -> 10.0s | 27.2s -> **15.1s** (now reaches depth 17 in 24.8s; previously capped at 16) |
+| hard (tactical) | 27.4s -> **20.5s** | not reached either way at 30s (big 12->13 branching spike persists — a separate, known search-instability issue, not eval speed) |
+
+A separate, unrelated eval-hot-path cleanup made just before this (removing three per-node heap
+allocations in `network.cpp`, replacing them with fixed-size stack arrays sized to a new
+`kMaxHidden` compile-time cap) was verified correct but showed **no measurable speed change** in
+isolation — that earlier "2x regression" read was a stale apples-to-oranges comparison against a
+pre-threat-features baseline, corrected once measured properly. The real, verified win this section
+is the bitboard-native threat/perspective computation above.
+
+Also fixed in passing: `Makefile`'s `test_accumulator`/`test_nnue_features` targets were missing
+`$(BITBOARD_SRC)` on the link line — a pre-existing gap (both files reference
+`chess::bitboard::Position` symbols regardless of whether a given test exercises them), surfaced
+when `nnue_features.cpp` gained a hard dependency on `Position` for the new fast path.

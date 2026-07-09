@@ -24,16 +24,17 @@ uci_engine: tools/uci_engine.cpp $(CHESS_SRC) $(BITBOARD_SRC) $(HUMAN_LIMIT_SRC)
 eval_cli: tools/eval_cli.cpp $(CHESS_SRC) $(HUMAN_LIMIT_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tools/eval_cli tools/eval_cli.cpp $(CHESS_SRC) $(HUMAN_LIMIT_SRC)
 
-test: tests/test_chess.cpp tests/simple_demo.cpp tests/test_nnue_features.cpp tests/test_accumulator.cpp tests/test_fast_legality.cpp tests/test_bitboard_attacks.cpp tests/test_bitboard_perft.cpp tests/test_bitboard_cross_validate.cpp tests/test_accumulator_bb.cpp $(CHESS_SRC) $(BITBOARD_SRC) chess/board.h chess/pieces.h engine/human_limit/nnue_features.h engine/human_limit/accumulator.h
+test: tests/test_chess.cpp tests/simple_demo.cpp tests/test_nnue_features.cpp tests/test_accumulator.cpp tests/test_fast_legality.cpp tests/test_bitboard_attacks.cpp tests/test_bitboard_perft.cpp tests/test_bitboard_cross_validate.cpp tests/test_accumulator_bb.cpp tests/test_threat_facts_cross_validate.cpp $(CHESS_SRC) $(BITBOARD_SRC) chess/board.h chess/pieces.h engine/human_limit/nnue_features.h engine/human_limit/accumulator.h
 	$(CXX) $(CXXFLAGS) -o tests/test_chess tests/test_chess.cpp $(CHESS_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tests/simple_demo tests/simple_demo.cpp $(CHESS_SRC)
-	$(CXX) $(CXXFLAGS) -I. -o tests/test_nnue_features tests/test_nnue_features.cpp $(CHESS_SRC) engine/human_limit/nnue_features.cpp
-	$(CXX) $(CXXFLAGS) -I. -o tests/test_accumulator tests/test_accumulator.cpp $(CHESS_SRC) engine/human_limit/network.cpp engine/human_limit/nnue_features.cpp engine/human_limit/accumulator.cpp
+	$(CXX) $(CXXFLAGS) -I. -o tests/test_nnue_features tests/test_nnue_features.cpp $(CHESS_SRC) $(BITBOARD_SRC) engine/human_limit/nnue_features.cpp
+	$(CXX) $(CXXFLAGS) -I. -o tests/test_accumulator tests/test_accumulator.cpp $(CHESS_SRC) $(BITBOARD_SRC) engine/human_limit/network.cpp engine/human_limit/nnue_features.cpp engine/human_limit/accumulator.cpp
 	$(CXX) $(CXXFLAGS) -o tests/test_fast_legality tests/test_fast_legality.cpp $(CHESS_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tests/test_bitboard_attacks tests/test_bitboard_attacks.cpp chess/bitboard/bitboard.cpp chess/bitboard/magic.cpp
 	$(CXX) $(CXXFLAGS) -I. -o tests/test_bitboard_perft tests/test_bitboard_perft.cpp $(BITBOARD_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tests/test_bitboard_cross_validate tests/test_bitboard_cross_validate.cpp $(BITBOARD_SRC) $(CHESS_SRC)
 	$(CXX) $(CXXFLAGS) -I. -o tests/test_accumulator_bb tests/test_accumulator_bb.cpp $(BITBOARD_SRC) $(CHESS_SRC) engine/human_limit/network.cpp engine/human_limit/nnue_features.cpp engine/human_limit/accumulator.cpp
+	$(CXX) $(CXXFLAGS) -I. -o tests/test_threat_facts_cross_validate tests/test_threat_facts_cross_validate.cpp $(BITBOARD_SRC) engine/human_limit/nnue_features.cpp
 	./tests/test_chess
 	./tests/test_nnue_features
 	./tests/test_accumulator
@@ -42,10 +43,11 @@ test: tests/test_chess.cpp tests/simple_demo.cpp tests/test_nnue_features.cpp te
 	./tests/test_bitboard_perft
 	./tests/test_bitboard_cross_validate
 	./tests/test_accumulator_bb
+	./tests/test_threat_facts_cross_validate
 
 all: engine_gameplay engine_selfplay uci_engine test
 
 clean:
-	rm -f engine_gameplay engine_selfplay train_human_limit tools/bestmove_cli tools/uci_engine tools/eval_cli tests/test_chess tests/simple_demo tests/test_nnue_features tests/test_accumulator tests/test_fast_legality tests/test_bitboard_attacks tests/test_bitboard_perft tests/test_bitboard_cross_validate tests/test_accumulator_bb
+	rm -f engine_gameplay engine_selfplay train_human_limit tools/bestmove_cli tools/uci_engine tools/eval_cli tests/test_chess tests/simple_demo tests/test_nnue_features tests/test_accumulator tests/test_fast_legality tests/test_bitboard_attacks tests/test_bitboard_perft tests/test_bitboard_cross_validate tests/test_accumulator_bb tests/test_threat_facts_cross_validate
 
 .PHONY: all test clean

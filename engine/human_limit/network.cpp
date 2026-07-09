@@ -46,7 +46,7 @@ int32_t dotU8S8Avx2(const uint8_t* u, const int8_t* s, int dim) {
 
 }
 
-float Network::headForward(const std::vector<float>& x, int bucket) const {
+float Network::headForward(const float* x, int bucket) const {
     const int8_t* fc1wq = &fc1wQuant_[static_cast<size_t>(bucket) * kHeadWidth * 2 * hidden_];
     const int32_t* fc1wRowSum = &fc1wRowSum_[static_cast<size_t>(bucket) * kHeadWidth];
     const float fc1Scale = fc1wScale_[bucket];
@@ -60,7 +60,7 @@ float Network::headForward(const std::vector<float>& x, int bucket) const {
     float xMaxAbs = 1e-6f;
     for (int j = 0; j < dim; j++) xMaxAbs = std::max(xMaxAbs, std::abs(x[j]));
     const float xScale = 63.0f / xMaxAbs;
-    std::vector<uint8_t> uxq(static_cast<size_t>(dim));
+    std::array<uint8_t, 2 * kMaxHidden> uxq;
     for (int j = 0; j < dim; j++) {
         int q = static_cast<int>(std::lround(x[j] * xScale));
         q = std::clamp(q, -63, 63);
@@ -132,17 +132,16 @@ float Network::forward(const FeatureSet& f, int bucket) const {
         for (int h = 0; h < hidden_; h++) ntmAcc[h] += row[h];
     }
 
-    return forwardFromAccumulators(stmAcc, ntmAcc, bucket);
+    return forwardFromAccumulators(stmAcc.data(), ntmAcc.data(), bucket);
 }
 
-float Network::forwardFromAccumulators(const std::vector<float>& stmAcc, const std::vector<float>& ntmAcc,
-                                        int bucket) const {
-    std::vector<float> x(static_cast<size_t>(2 * hidden_));
+float Network::forwardFromAccumulators(const float* stmAcc, const float* ntmAcc, int bucket) const {
+    std::array<float, 2 * kMaxHidden> xBuf;
     for (int h = 0; h < hidden_; h++) {
-        x[h] = stmAcc[h];
-        x[hidden_ + h] = ntmAcc[h];
+        xBuf[h] = stmAcc[h];
+        xBuf[hidden_ + h] = ntmAcc[h];
     }
-    return headForward(x, bucket);
+    return headForward(xBuf.data(), bucket);
 }
 
 double Network::evaluate(const chess::Game& game) const {
@@ -156,8 +155,8 @@ double Network::evaluate(const chess::Game& game) const {
 
 double Network::evaluateFromAccumulators(const std::vector<float>& whiteAcc, const std::vector<float>& blackAcc,
                                           chess::Color turn, int bucket) const {
-    const std::vector<float>& stmAcc = (turn == chess::Color::White) ? whiteAcc : blackAcc;
-    const std::vector<float>& ntmAcc = (turn == chess::Color::White) ? blackAcc : whiteAcc;
+    const float* stmAcc = (turn == chess::Color::White) ? whiteAcc.data() : blackAcc.data();
+    const float* ntmAcc = (turn == chess::Color::White) ? blackAcc.data() : whiteAcc.data();
     double raw = forwardFromAccumulators(stmAcc, ntmAcc, bucket);
     double whiteRelative = (turn == chess::Color::White) ? raw : -raw;
     return whiteRelative * kCpScale;
@@ -165,14 +164,16 @@ double Network::evaluateFromAccumulators(const std::vector<float>& whiteAcc, con
 
 double Network::evaluateFromAccumulatorsWithThreats(const std::vector<float>& whiteAcc,
                                                       const std::vector<float>& blackAcc,
-                                                      const chess::BoardArray& board, chess::Color turn,
+                                                      const chess::bitboard::Position& pos, chess::Color turn,
                                                       int bucket) const {
-    std::vector<float> whiteWithThreats = whiteAcc;
-    std::vector<float> blackWithThreats = blackAcc;
+    std::array<float, kMaxHidden> whiteWithThreats;
+    std::array<float, kMaxHidden> blackWithThreats;
+    std::copy(whiteAcc.begin(), whiteAcc.end(), whiteWithThreats.begin());
+    std::copy(blackAcc.begin(), blackAcc.end(), blackWithThreats.begin());
 
-    PerspectiveContext whiteCtx = computePerspectiveContext(board, true);
-    PerspectiveContext blackCtx = computePerspectiveContext(board, false);
-    std::vector<ThreatFact> facts = computeThreatFacts(board);
+    PerspectiveContext whiteCtx = computePerspectiveContextBB(pos, true);
+    PerspectiveContext blackCtx = computePerspectiveContextBB(pos, false);
+    std::vector<ThreatFact> facts = computeThreatFactsBB(pos);
 
     for (int idx : threatFeaturesForPerspective(facts, whiteCtx.kingBucket, true)) {
         const float* row = &embedding_[static_cast<size_t>(idx) * hidden_];
@@ -183,7 +184,11 @@ double Network::evaluateFromAccumulatorsWithThreats(const std::vector<float>& wh
         for (int h = 0; h < hidden_; h++) blackWithThreats[h] += row[h];
     }
 
-    return evaluateFromAccumulators(whiteWithThreats, blackWithThreats, turn, bucket);
+    const float* stmAcc = (turn == chess::Color::White) ? whiteWithThreats.data() : blackWithThreats.data();
+    const float* ntmAcc = (turn == chess::Color::White) ? blackWithThreats.data() : whiteWithThreats.data();
+    double raw = forwardFromAccumulators(stmAcc, ntmAcc, bucket);
+    double whiteRelative = (turn == chess::Color::White) ? raw : -raw;
+    return whiteRelative * kCpScale;
 }
 
 bool Network::load(const std::string& path) {

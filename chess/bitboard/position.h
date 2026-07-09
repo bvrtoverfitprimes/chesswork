@@ -69,6 +69,9 @@ public:
         int side = (c == chess::Color::White) ? 0 : 1;
         return (pieces_[side][1] | pieces_[side][2] | pieces_[side][3] | pieces_[side][4]) != 0;
     }
+    Bitboard occupiedBitboard(chess::Color c) const { return occupied_[c == chess::Color::White ? 0 : 1]; }
+    Bitboard allOccupiedBitboard() const { return allOccupied_; }
+    int kingSquare(chess::Color c) const { return c == chess::Color::White ? whiteKingSq_ : blackKingSq_; }
     bool inCheck() const;
     bool isFiftyMoveDraw() const { return halfMoves_ >= 100; }
     bool isRepetitionDraw() const;

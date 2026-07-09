@@ -158,8 +158,7 @@ void Searcher::updateCorrectionHistory(Position& pos, int depth, int staticEval,
 int Searcher::evalWhiteRelative(Position& pos) {
     const Accumulator& acc = accStack_[accTop_];
     int bucket = outputBucketFromPieceCount(acc.pieceCount);
-    return static_cast<int>(net_.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos.toBoardArray(),
-                                                                      pos.turn(), bucket));
+    return static_cast<int>(net_.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos, pos.turn(), bucket));
 }
 
 void Searcher::pushMove(Position& pos, const chess::bitboard::BBUndo& undo) {

@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "../../chess/bitboard/position.h"
 #include "../../chess/pieces.h"
 
 namespace human_limit {
@@ -37,6 +38,11 @@ struct PerspectiveContext {
 
 PerspectiveContext computePerspectiveContext(const chess::BoardArray& board, bool perspIsWhite);
 
+// Bitboard-native equivalent, using Position::kingSquare() (O(1)) instead of an
+// O(64) mailbox scan. Must match computePerspectiveContext() exactly (see
+// tests/test_threat_facts_cross_validate.cpp).
+PerspectiveContext computePerspectiveContextBB(const chess::bitboard::Position& pos, bool perspIsWhite);
+
 int featureIndexForPiece(const PerspectiveContext& ctx, int r, int c, char piece);
 
 struct ThreatFact {
@@ -46,6 +52,14 @@ struct ThreatFact {
 };
 
 std::vector<ThreatFact> computeThreatFacts(const chess::BoardArray& board);
+
+// Bitboard-native equivalent of computeThreatFacts(), using Position's existing
+// attack tables (O(1) attackersTo() per piece) instead of mailbox geometric
+// ray-walking. Must produce bit-for-bit identical output (see
+// tests/test_threat_facts_cross_validate.cpp) -- this is the hot-path version
+// used by Searcher::evalWhiteRelative; the mailbox version above remains the
+// verified ground truth.
+std::vector<ThreatFact> computeThreatFactsBB(const chess::bitboard::Position& pos);
 
 std::vector<int> threatFeaturesForPerspective(const std::vector<ThreatFact>& facts, int kingBucket,
                                                bool perspIsWhite);
