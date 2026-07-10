@@ -36,10 +36,14 @@ def gsprt_llr(wins, draws, losses, elo0, elo1):
     return (s1 - s0) * (2 * score - s0 - s1) * n / (2 * var)
 
 
-def open_engine(binary, weights, threads):
+def open_engine(binary, weights, threads, tune=None):
     env = dict(os.environ)
     if weights:
         env["LIMIT_WEIGHTS"] = os.path.abspath(weights)
+    if tune:
+        env["RAW_TUNE"] = tune
+    elif "RAW_TUNE" in env:
+        del env["RAW_TUNE"]
     eng = chess.engine.SimpleEngine.popen_uci(os.path.abspath(binary), timeout=60, env=env)
     if threads > 1:
         try:
@@ -73,6 +77,7 @@ def main():
     p.add_argument("--b-binary", required=True)
     p.add_argument("--b-weights", default=None)
     p.add_argument("--threads", type=int, default=1, help="engine threads per side")
+    p.add_argument("--a-tune", default=None, help="RAW_TUNE scales for engine A only")
     p.add_argument("--ms", type=int, default=500)
     p.add_argument("--max-plies", type=int, default=240)
     p.add_argument("--concurrency", type=int, default=2, help="parallel game workers")
@@ -90,7 +95,7 @@ def main():
     state = {"w": 0, "d": 0, "l": 0, "game_no": 0, "stop": False}
 
     def worker():
-        a = open_engine(args.a_binary, args.a_weights, args.threads)
+        a = open_engine(args.a_binary, args.a_weights, args.threads, args.a_tune)
         b = open_engine(args.b_binary, args.b_weights, args.threads)
         try:
             while True:
@@ -109,7 +114,7 @@ def main():
                             eng.quit()
                         except Exception:
                             pass
-                    a = open_engine(args.a_binary, args.a_weights, args.threads)
+                    a = open_engine(args.a_binary, args.a_weights, args.threads, args.a_tune)
                     b = open_engine(args.b_binary, args.b_weights, args.threads)
                     continue
                 with lock:

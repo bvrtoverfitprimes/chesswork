@@ -1,6 +1,7 @@
 // prints raw_engine eval breakdown for a FEN: total + per-term (white-relative cp)
 #include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <string>
 
 #include "../chess/bitboard/bitboard.h"
@@ -10,11 +11,20 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: raw_eval_cli \"<fen>\"\n");
+        std::fprintf(stderr, "usage: raw_eval_cli \"<fen>\" | raw_eval_cli batch\n");
         return 1;
     }
     chess::bitboard::initAttackTables();
     chess::bitboard::initMagics();
+    if (std::string(argv[1]) == "batch") {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            if (line.empty()) continue;
+            chess::bitboard::Position bp(line);
+            std::printf("%d\n", raw_engine::evaluateWhiteRelative(bp));
+        }
+        return 0;
+    }
     chess::bitboard::Position pos(argv[1]);
     if (argc > 2 && std::string(argv[2]) == "bench") {
         volatile int sink = 0;

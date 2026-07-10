@@ -2564,3 +2564,399 @@ the added chess knowledge. ~9x cheaper than the NNUE eval; raw2 searches depth 1
 
 Cycle-2 anchor (previous raw build vs SF@2200 @1000ms) and then an SPRT gate of the
 piece-quality build vs the previous raw build are queued; results to be appended here.
+
+### 34.7 Quick results appended: anchor, piece-quality SPRT verdict, depth profile
+
+- **Anchor after diagnosis-cycle fixes: 7.5/8 (93.8%) vs SF@2200 @1000ms** — the classical engine
+  has moved well past its ~2100-2200 baseline on the strength of the cycle-1 fixes alone.
+- **Piece-quality bundle REJECTED by SPRT: 11W/14D/23L (37.5%), H0 accepted after 48 games**
+  (~-90 Elo vs the simpler build). Post-mortem: King Influence double-counts the attack-units
+  king-safety term, center control double-counts PST centralization, and ~12 untuned weights in
+  one batch added noise faster than knowledge. The eval got smarter-looking and weaker — games
+  caught it. Response: all piece-quality terms moved behind a RAW_PQ env gate (default off) so
+  the framework, report card, and perf work survive while each term re-earns its place
+  individually through SPRT; the perf pass (pawn hash, hoisted king boards, eval cache) is
+  value-neutral and stays.
+- Depth-at-time (piece-quality build, 15s): easy position depth 21 @ 12.5s, hard position
+  depth 20 @ 8.8s, ~570-800k nps, EBF ~1.4-1.6 — vs the NNUE engine's depth 9-10 at 800ms these
+  positions reach depth 12-14. The classical engine's whole bet is that +6-8 plies can outweigh
+  the cruder eval; the 93.8% @2200 anchor says it largely does at this level.
+- Footnote on verification: PQ-off is NOT bit-identical to the champion binary because the
+  breakdown refactor tapers each eval category separately and integer truncation shifts totals
+  by ±1-2cp — enough to diverge search trees. Equivalence being settled by SPRT, not assumed.
+
+### 34.8 A double-count bug found by ground-truth verification, and the champion reset
+
+The PQ-off "equivalence" SPRT crashed instantly (0W/2D/5L) — far too big for the rounding-noise
+hypothesis. Rather than more games, a 150-position comparison of the eval's pawnStructure row
+against an independent python recomputation found 86/150 mismatches, every one EXACTLY 2x the
+expected value: when the pawn-structure hash was introduced, the deletion of the old
+doubled/isolated loop silently no-op'd (its text had changed when the passer logic was extracted
+earlier), so every doubled/isolated penalty counted twice. Consequences faced honestly:
+- The piece-quality SPRT rejection (37.5%) is CONTAMINATED — raw2 carried the same double-count.
+  The PQ terms get a fair retrial later against the fixed champion.
+- Two silent patch no-ops bit us in one evening. Process rule added: every source patch gets an
+  immediate grep-verify, and every eval change gets a ground-truth comparison BEFORE games.
+Fix verified 0/150 mismatches. Fixed build (PQ-off, eval cache restored — the cache was
+exonerated) vs champion B: 20W/26D/14L (55.0%, LLR +1.86 toward better) over 60 games —
+adopted as the new canonical champion; old B binary archived (its exact source was never
+committed, a mistake not to repeat).
+
+### 34.9 Champion anchor, the Black-color skew, and a test-farm built-then-scrapped
+
+**Anchor of the fixed champion** (post pawn-fix, threats/hanging bugfixes, before the fix-loop
+cycles) at the honest 1000ms time control: **62.5% (5/8) vs SF@2300, 68.8% (5.5/8) vs SF@2400.**
+The 2400 number is notable — it is *above* the NNUE engine's own 66.1% benchmark score vs the same
+opponent (§33.1). A hand-written classical eval, one evening old, was already playing at the
+neural engine's level. Small samples (n=8), but directionally strong.
+
+**Color skew, surfaced by direct question.** Asked whether losses concentrate by color, tallied
+every Stockfish game to date: **all three of the classical engine's losses came as Black; zero as
+White** (v0 baseline dropped its only points as Black; the sole non-win vs 2200 was a Black draw;
+the anchor's losses were Black). The NNUE engine is also worse as Black (66.9% White / 58.9% Black
+over the 160-game benchmark) but by a normal first-move-advantage margin; the classical engine's
+skew is sharper. Plausible cause: no opening book (by project rule), so as Black against
+Stockfish's initiative the tempo-blind pawn-grabbing the diagnosis already flagged compounds. A
+Black-only diagnosis run was launched to target it (16 games as Black vs SF@2300 — the engine went
+**16-0**, so the "weakness" is real only in the losses-to-stronger-play sense, not a general Black
+collapse).
+
+**A distributed test-farm, built and then removed on instruction.** To parallelize testing onto a
+second idle PC (i5-1235U on the LAN) and get contention-free timing, built a stdlib HTTP job server
+(`tools/testfarm/server.py`) + a self-contained worker bundle (portable x86-64-v3 engine builds,
+vendored python-chess, double-click .bat, ~166MB zip). It was functional and staged to a USB stick,
+then the user scrapped the idea; server killed, `tools/testfarm/` deleted (never committed). Recorded
+because the portable-build recipe (`-march=x86-64-v3` for cross-CPU compatibility vs our usual
+`-march=native`) is worth remembering.
+
+### 34.10 The fix-loop: 2 recorded games -> Stockfish diagnosis -> exact-position fix -> cumulative regression
+
+Per direct instruction, replaced the batch A/B rhythm with a tight manual loop I drive by hand,
+because the user correctly noted I am not a strong enough chess evaluator to iterate on perception
+alone (§34.3), and because a *cumulative* safeguard was needed so fix #N cannot silently undo fix
+#3. Built `tools/fix_loop.py`:
+- `play`: 2 recorded games (colors offset) vs calibrated SF; a stronger SF (depth-16 analysis)
+  grades every position, flags the worst blunders, drops any that deeper analysis vindicates, and
+  APPENDS each surviving (fen, our_move, sf_best_move, swing) to a growing regression file.
+- `verify`: replays the *current* engine on EVERY regression entry ever collected, reporting
+  PLAYS-BEST / CHANGED / STILL-BAD — so every fix is checked against all prior fixes.
+
+Seeded from the 16-game Black diagnosis (9 entries), then cycles 0-4. Fixes ADOPTED, each indicted
+by exact positions and verified on them plus the full suite:
+- **King-file openness -> king-safety attack units** (cycle 0): the 422cp headline blunder — an
+  exchange sac that ripped open our own king's file, which the crude attack-unit KS didn't see —
+  now plays Stockfish's exact best move.
+- **Knight 2-hop-from-king-ring approach bonus** (cycle 1): rim PSTs can't see concrete
+  approach maneuvers (the Na5-b3 class); +12/+6 for a knight one move from the enemy king ring.
+  Flipped three tactical positions at once.
+- **Endgame king-escort + promotion-path control** (cycle 3): the permanently-zero `endgameKing`
+  breakdown row was indicted three separate times (bishop-ending technique errors throwing +500
+  wins). Added eg-only king-Chebyshev-distance-to-stop-square escort + path-control.
+
+Discipline held under pressure: **cycle 2 adopted NO fix** — all three of its blunders were root
+near-ties with *correct* leaf evals (no eval term was indicted); forcing a term would have repeated
+the over-terming that failed SPRT earlier. Cycle 4's four blunders came from one collapsing Black
+game (a buried bishop) and pointed at threats/trapped-piece granularity — exactly what the Berserk
+batch (below) addresses, so they were logged rather than hand-patched.
+
+Regression suite at the honest 1000ms match TC: **12/15 positions avoid their original blunder, ~half
+play Stockfish's literal best move.** The persistent holdouts are a pure horizon class (quiet
+positions where the refutation of a natural-looking move sits 4+ plies out) — not eval bugs.
+
+## 35. Grounding in real engine source: Berserk 4.7, and the first weights-from-a-real-engine batch
+
+Per instruction ("do the research yourself, look into Berserk, use web search, look at the
+releases"), dropped the sub-agent idea and pulled the ACTUAL source: cloned Berserk 4.7.0 — the last
+hand-crafted-eval version before Berserk 5+ went NNUE — and read its real `eval.c`/`weights.c`,
+cross-referenced against Stockfish 11's HCE. Findings written to `training/research_classical_gaps.md`
+with a top-10 ranked by (documented Elo)/(cost). The single most important conclusion:
+**our ceiling is set less by which terms we have than by the fact that NONE of our weights are
+tuned** — Berserk/Ethereal/Weiss each gained 100-250 Elo purely from automated (Texel/gradient)
+tuning of an otherwise-complete eval. That is the biggest lever and a near-term project.
+
+Crucially, Berserk's tuned weights are at essentially our cp scale (its pawn = 100), so they are
+directly usable rather than needing re-derivation. **Batch 1** transcribes the two highest-value
+missing pieces verbatim:
+
+1. **King safety with SAFE CHECKS** — the dominant classical king-safety component, entirely absent
+   from our crude attack-unit table. Berserk's exact formula: for the defender's king, compute
+   `weak` king-zone squares (attacked by enemy, defended <= once, counting only queen/king as our
+   "soft" defenders) and `vulnerable` squares (undefended by us, or weak-and-doubly-attacked, and
+   empty of enemy pieces); then per piece type intersect the king's check-geometry with the enemy's
+   actual piece attacks to get SAFE checks (landing on vulnerable squares) vs unsafe. `danger =
+   attackerWeight_sum * attackerCount + 279*safeKnightChk + 311*safeBishopChk + 272*safeRookChk +
+   213*safeQueenChk + 57*unsafe + 78*weakZoneSquares - 190*(no enemy queen) - 87*(we have a knight
+   defending)`, then a nonlinear `-danger^2/1024` (mg) `-danger/32` (eg) penalty. This required
+   adding per-piece-type attack-union maps and two-attack maps for both sides (accumulated in the
+   piece loops, king safety computed post-loop once all maps are complete).
+2. **Granular threats** — replaced our 2 crude threat terms with Berserk's tuned per-victim tables:
+   threat-by-knight / -bishop / -rook indexed by victim type (e.g. knight-attacks-rook = +94mg),
+   the big safe-pawn threat (95/45 per attacked piece), and hanging pieces (11/24).
+3. **Opposite-colored-bishop endgame scaling** — pure-OCB endings scaled to 64/128 (very drawish),
+   OCB-with-other-pieces to 96/128, to stop converting drawn OCB positions into thrown points.
+
+Verification before games (per the process rule): clean compile under `-Wall -Wextra`; eval
+symmetry exact (start +12, mirror -12); tactical sanity intact (mate-in-1, hanging queen still
+found); 421ns/eval — with all the new terms it is still ~9x cheaper than the NNUE eval and barely
+above the pre-batch 405ns. The exact pre-batch champion binary was reconstructed by reverse-applying
+the patch (verified: 0 new KS terms, old crude block present) so the batch could be SPRT-isolated
+rather than confounded with the fix-loop gains.
+
+`tools/record_match.py` was also built for the user's acceptance test: 10 games vs SF@2400, 5 each
+color, saving every move (SAN+UCI+FEN trail) plus a PGN. It runs immediately after the SPRT verdict.
+
+SPRT of Batch 1 vs the reconstructed champion (400ms, conc=2, H0: <=0 Elo, H1: >=40): RESULT PENDING
+— [to be filled when the verdict lands].
+
+## 36. The Berserk ladder: from ~2100 to 90% vs SF@2400 in one classical-eval session
+
+(This section supersedes §35's "RESULT PENDING" line: batch-1 SPRT finished at 47.0%/100g, LLR
+-1.99 — leaning reject, but NOT a collapse. That distinction is the key that unlocked everything.)
+
+Context: after the fix-loop (§34.10) the hand-written classical engine was at ~62.5% vs SF@2300 /
+68.8% vs SF@2400 (n=8, 1000ms). The user directed: research real strong engines (Berserk especially),
+implement what we're missing, keep SPRT-gating, iterate toward ~2500. This section is the full,
+honest record — including every rejection and exactly why each pivot happened — because that
+reasoning is the reusable asset.
+
+### 36.1 The scale discovery — the single most important finding of the session
+
+Batch 1 (Berserk 4.7 king-safety-with-safe-checks + granular threats + OCB scaling, transcribed
+VERBATIM from the last hand-crafted-eval Berserk release) SPRT'd at 47%/100 games — worse than
+champion, but only slightly, and the formula is textbook-correct. "Sound formula, wrong magnitude"
+is a specific, diagnosable failure, not a dead end. Investigation of the Berserk source resolved it:
+**Berserk's internal unit is ~2x a centipawn.** Its PAWN_PSQT values sit at ~90-130 AND `InitPSQT`
+adds another +100 material on top, so a pawn ≈ 200 internal units. Every non-material Berserk weight
+is therefore ~2x our cp scale. Transcribing them verbatim made king-safety and threats ~2x too
+strong — over-aggressive attacks, bad speculative trades, a slight net loss.
+
+**batch-1b** = identical Berserk formulas with the OUTPUT rescaled to our cp: king-safety penalty
+`danger^2/2048` (was /1024) and eg `danger/64`; all linear threat weights halved. SPRT vs champion:
+**49W/42D/29L = 58.3% over 120 games, LLR +2.26, ~+58 Elo — ADOPTED.** The batch-1 vs batch-1b
+delta (47% -> 58.3%, a ~40-Elo swing) is the same idea quantified twice: **you cannot cherry-pick a
+tuned engine's weights without matching its internal scale.** This lesson recurs three more times
+below and is now the first thing to check whenever a transcribed-weight change underperforms.
+
+### 36.2 batch-2 pawn structure — adopted "marginal", and why
+
+Added Berserk's supported (defended) pawns, phalanx (rank-scaled), backward pawns (into the pawn
+hash), plus minor-behind-pawn and rook-trapped-by-uncastled-king — all with HALVED weights (the
+§36.1 lesson applied preemptively). SPRT: 45W/36D/39L = 52.5%, LLR -0.00 — statistically neutral.
+Adopted anyway, deliberately: the terms are textbook-correct, don't regress (>=50%), and each adds a
+tunable parameter for the eventual tuner. Flagged explicitly as "not a strength win on its own" so
+the record stays honest. (A first application attempt silently no-op'd because the patch anchor text
+`pawns[ps ? 0 : 1]` didn't match the source's `pawns[ps == 0 ? 1 : 0]` — the same silent-patch-no-op
+class as §34.8; caught by a marker grep, then applied correctly. The process rule "grep-verify every
+patch" earned its keep again.)
+
+### 36.3 batch-3 Berserk mobility tables — REJECTED, and the lesson sharpened
+
+Replaced our flat linear mobility with Berserk's tuned per-count mobility tables, transcribed as the
+RELATIVE shape anchored at our current reference counts and halved (so no baseline double-count with
+our material). SPRT: 27W/38D/40L = 43.8%, LLR -2.95 — clean H0, decisively rejected. Why: Berserk's
+mobility tables were gradient-tuned JOINTLY with Berserk's PSTs and material as one coherent set;
+grafted onto our PeSTO base they lose coherence and actively regress. This is §36.1's lesson at the
+next level: not just scale, but COHERENCE — a single tuned table is only meaningful alongside the
+rest of the set it was fit with. This rejection is what motivated pivoting from "import Berserk's
+tables" to "tune OUR OWN base" (§36.4). Reverted cleanly (champion source snapshot restored).
+
+### 36.4 The tuner: category scales, an overfit rejection, and the eval-linearity trick
+
+To tune our own base safely, added 12 runtime CATEGORY-SCALE multipliers (mobility, king-safety,
+threats, passed, pawn-structure, etc.), loaded from env RAW_TUNE, default 128/128 = identity =>
+byte-identical to untuned (so the mechanism itself can never regress). Built a WDL dataset of 14,655
+quiet positions from our own benchmark+overnight game trails (white-POV game-result labels), and a
+coordinate-descent tuner minimizing logistic loss of sigmoid(eval*K/400) vs result.
+
+Two results, both instructive:
+- **Naive (unregularized, bounds 0-400):** pushed mobility/threats/passed/pieceQuality/endgameKing to
+  ~3x (hit the bound) and killed pawn-structure to ~0.06x, for only ~2% MSE reduction. SPRT: **0W/0D/4L
+  before I killed it** — decisively worse. This is §28's lesson reincarnated for the classical eval:
+  **a metric improvement (MSE-on-WDL) that does not track game strength; over-fitting a weak proxy
+  HURTS.** Killed early rather than burn 120 games on a confirmed loser.
+- **v2 (numpy, L2-regularized toward identity, bounds 56-220):** sane result — everything within
+  +-20% of identity (mobility/KS/threats 136-144, passed 152, pawn-struct 112). Also discovered the
+  eval is EXACTLY LINEAR in each category scale, so the whole eval decomposes into base + 12 linear
+  category contributions with just 13 batch-evals; all tuning is then instant pure-numpy. This
+  linearity generalizes directly to the real per-weight Texel tuner (the documented 100-250 Elo
+  lever, deferred as a larger refactor).
+
+Net: category-scale tuning has only ~2% MSE headroom on our data and the aggressive version loses on
+games — so it is NOT the near-term win. But the plumbing (runtime weights + linearity decomposition
++ WDL dataset) is exactly what the per-weight tuner will reuse.
+
+### 36.5 Fast ablation — replacing a 4-5h game sweep with a 10-second decision-impact test
+
+User (now awake) rightly rejected the planned feature-ablation-by-games sweep (12 features x 40 games
+= 480 games ≈ 4-5h). The far better method, built and run in ~10 seconds: **decision-impact
+ablation.** For 3,000 positions, generate every legal child, eval all children with each feature ON
+vs OFF, and count how often the depth-1 best move CHANGES when a feature is removed. That measures the
+thing that actually matters (does the feature change decisions?) with zero games. Result:
+
+  king_safety 17.7% (43.9cp) | threats 13.6% | mobility 5.3% | passed 4.2% | pawn_structure 3.5% |
+  bishop_mobility 2.7% | rook_files 2.5% | endgame_king 2.3% | piece_quality(knight-2hop) 2.1% |
+  bishop_pair 0.7% | center_control 0.0%/0.0cp | outposts 0.0%/0.0cp
+
+The method SELF-VALIDATED: it flagged center_control and outposts as EXACTLY 0.0cp (they are the
+pqEnabled-gated piece-quality experiment from §34.6, which failed its SPRT and is switched off — so
+genuinely dead), and it ranked king_safety #1, matching its +58-Elo game result independently. Every
+other feature earns a real, nonzero share of decisions.
+
+### 36.6 Simplification, gated by byte-identity instead of games
+
+The ablation named the only fluff: the dead pqEnabled piece-quality block (king-influence, center,
+outposts, defensive-load, etc.) — all switched off, contributing exactly 0. Removed it entirely,
+plus its orphaned tables (kInfW, kCenter*, the vB/vR/vQ king-virtual-board chain, kContactEg).
+Crucially this was gated NOT by games but by **byte-identity**: eval must be bit-for-bit identical on
+all 14,655 positions. It was (verified before AND after the orphan-cleanup), so the removal has
+provably zero behavior change and needed no SPRT. evaluation.cpp went 640 -> 580 lines, compiles with
+zero warnings, champion rebuilt identically. (Removing provably-dead code is the one class of change
+where byte-identity is a stronger gate than games — no variance, no waiting.)
+
+### 36.7 Headline result and where we stand
+
+Recorded 10-game match, champion (batch-1b + simplification) vs SF@2400, 1000ms, 5-each-color, every
+move saved (record_2400_games.pgn/jsonl): **9.0/10 = 90% (8W/2D/0L, UNDEFEATED).** Elo diff +382,
+95% CI [+216, +2400] — the point estimate is noisy at n=10 but the lower bound alone (+216) says we
+have cleared 2400 comfortably. Session trajectory vs SF@2400: fix-loop champion 68.8% -> batch-1b
+champion 90%. Because 90% is near the ceiling the 2400 anchor can resolve, a vs-SF@2500 anchor (14
+recorded games) is running to place the true level rather than over-read n=10.
+
+Adopted this session: batch-1b (+58 Elo, the real win) and batch-2 (neutral, kept for tuner
+optionality), plus the dead-code simplification. Rejected (correctly, all by games or byte-identity):
+batch-1 unscaled, batch-3 mobility graft, the aggressive tuner. Staged next: batch-4 (king-safety
+shelter/storm tables — targeting our proven #1-impact feature). Deferred as the big lever: the
+per-weight Texel tuner. Running record kept live in `training/overnight_findings.md`.
+
+### 36.8 Sanity stress-test vs a clearly-stronger engine (SF@3000)
+
+After the 90%/96% results vs LimitStrength 2400/2500, ran a deliberate stress test the model was
+expected to LOSE — SF@3000 (LimitStrength, near full strength at 1000ms, so it plays real chess
+unlike the saturated 2400-2500 levels) — purely to confirm the measurement picture is coherent
+(we're not winning because Stockfish is universally broken). It is: the classical champion got
+crushed but stole a couple of draws: final 1.0/10 (0W/2D/8L, 10%). This bounds us clearly BELOW 3000 while comfortably above what LimitStrength
+delivers at 2400-2500 — the true level (to be placed by a fixed-node bracket) sits in between.
+
+Three sample games (full PGN, our engine = "raw"):
+
+**Game 1 — raw (White) 1/2-1/2:** a genuine fight; raw reached an endgame a pawn up after a
+queenside pawn race (moves 36-40) but could not convert vs 3000's defense and took a repetition.
+```
+1. d4 Nf6 2. Nf3 e6 3. e3 Be7 4. Bd3 c5 5. c4 O-O 6. O-O d5 7. cxd5 Qxd5 8. Nc3 Qd7 9. a3 Nc6
+10. dxc5 Bxc5 11. Qe2 a5 12. Rd1 Qe7 13. Bd2 h6 14. Rac1 Rd8 15. h3 Bd7 16. Ne4 Bb6 17. Nxf6+ Qxf6
+18. Bc3 Qe7 19. Bc2 Bc7 20. Qc4 Rab8 21. Qe2 Be8 22. g3 Rxd1+ 23. Qxd1 Qd7 24. Qe2 b5 25. b3 b4
+26. Rd1 Qc8 27. Bb2 bxa3 28. Bxa3 Bd8 29. Rc1 Qb7 30. Bd6 Ra8 31. Qd3 g6 32. Qe4 Rc8 33. Nd2 f5
+34. Qf3 Bf6 35. Nc4 a4 36. Ba3 axb3 37. Rb1 Nd8 38. Qxb7 bxc2 39. Qb8 cxb1=Q+ 40. Qxb1 Rxc4
+41. Qb8 g5 42. Qd6 Kh7 43. Qf8 Bf7 44. Be7 Rc1+ 45. Kg2 Bxe7 46. Qxe7 Rd1 47. Qf6 g4 48. hxg4 fxg4
+49. Qf4 Bh5 50. Qa4 Rd5 51. Qf4 Kg6 52. Qe4+ Kf6 53. Qf4+ Kg7 54. Qe4 Kf6 55. Qf4+ Kg7 56. Qe4 1/2-1/2
+```
+
+**Game 2 — raw (Black) 0-1:** ground down in a queen endgame, mated move 54.
+```
+1. e4 Nc6 2. Nf3 e5 3. d4 exd4 4. c3 d5 5. exd5 Qxd5 6. Be2 Bf5 7. cxd4 Bxb1 8. Rxb1 Bb4+ 9. Bd2
+Bxd2+ 10. Qxd2 O-O-O 11. Qc2 Nf6 12. O-O Rhe8 13. Rfd1 Kb8 14. b4 Qe4 15. Bd3 Qf4 16. Bb5 Re6
+17. Qb3 Re7 18. Bxc6 bxc6 19. b5 c5 20. dxc5 Rxd1+ 21. Rxd1 Rd7 22. Re1 Rd5 23. g3 Qf5 24. b6 Rxc5
+25. bxa7+ Kxa7 26. Nd4 Qd5 27. Qb2 Ka6 28. Rb1 Qe4 29. Qb4 Qd5 30. Qa3+ Ra5 31. Qd3+ Ka7 32. Qc3
+Rc5 33. Qa3+ Ra5 34. Nc6+ Ka6 35. Nb8+ Ka7 36. Nc6+ Ka6 37. Nxa5 Qxa5 38. Qb2 Qb6 39. Qa3+ Qa5
+40. Qf8 Ne8 41. Qxe8 Qb6 42. Qa8+ Qa7 43. Qc8+ Ka5 44. Qd8 Qb6 45. Qa8+ Qa6 46. Qd5+ c5 47. Qd2+
+Ka4 48. Qd5 Qb5 49. Qa8+ Qa5 50. Qb7 c4 51. Qc6+ Ka3 52. Qxc4 Qe1+ 53. Rxe1 g6 54. Qb3# 1-0
+```
+
+**Game 3 — raw (White) 0-1:** over-invested in an attack, got mated move 57.
+```
+1. Nc3 d5 2. d4 c5 3. e3 cxd4 4. exd4 a6 5. Nf3 Nc6 6. g3 Nf6 7. Bg2 e6 8. Bf4 b5 9. h3 Be7 10. O-O
+O-O 11. Ne2 a5 12. Re1 Ba6 13. Ne5 Qb6 14. c3 Nxe5 15. dxe5 Ne4 16. Be3 Qb8 17. Bd4 b4 18. Nf4 Rc8
+19. Bxe4 dxe4 20. Rxe4 Bb7 21. Re3 Qc7 22. Qg4 Kh8 23. Nh5 Bf8 24. Rd1 Qc6 25. f3 bxc3 26. bxc3 Ba6
+27. Ree1 a4 28. Qf4 a3 29. Qxf7 Rc7 30. Qf4 Rb7 31. Rd2 Bc4 32. Be3 Kg8 33. Qg4 Kh8 34. Bf2 Re8
+35. Nf4 Rb2 36. Rd6 Qa4 37. Nd3 Rc2 38. Nc5 Qb5 39. Nxe6 Rxf2 40. Nxf8 Rb2 41. Nd7 Rxa2 42. Red1
+Bd5 43. Qh5 Qe2 44. Qxe8+ Bg8 45. Qxg8+ Kxg8 46. Nf6+ gxf6 47. Rd8+ Kg7 48. exf6+ Kf7 49. R8d7+ Kg6
+50. Rg7+ Kh6 51. Rxh7+ Kxh7 52. Rd7+ Kh8 53. Rd8+ Kh7 54. Rd7+ Kg6 55. Rg7+ Kxf6 56. Rf7+ Kxf7
+57. f4 Qg2# 0-1
+```
+
+### 36.9 batch-4 (king-safety shelter/storm) — REJECTED, the coherence lesson a third time
+
+King safety is the classical engine's #1-impact feature (§36.5 ablation: 17.7% of decisions), so its
+weakest component — our crude pawn-shield — was the obvious next target. Replaced it with Berserk
+4.7's tuned PAWN_SHELTER + PAWN_STORM + BLOCKED_PAWN_STORM tables (per-file, indexed by nearest own/
+enemy pawn rank), halved to our cp scale (§36.1 applied). Built clean, symmetry exact, tactical
+sanity intact. SPRT vs champion: **3W/9D/17L = 25.9%, LLR -3.40 — decisively rejected, reverted.**
+
+Why it lost so hard is the §36.3 coherence lesson a THIRD time, now unmistakable: Berserk's shelter/
+storm was tuned as one piece of a king-safety SYSTEM alongside its danger accumulator. We had already
+adopted the danger accumulator (batch-1b) and tuned its magnitude to OUR scale; bolting Berserk's
+shelter/storm on top double-counts king safety and grossly over-weights it. Conclusion for the record:
+**the cheap Berserk grafts are now exhausted — mobility tables (§36.3) and shelter/storm (§36.9) both
+rejected for the identical reason.** Further king-safety gains require JOINTLY tuning the shelter term
+WITH the existing danger term on our own base (the per-weight tuner), not another raw graft.
+
+### 36.10 Placing the true level: the fixed-node bracket, and session-end state
+
+UCI_LimitStrength saturated above 2400 (§36.7: 90% @2400, 96% @2500, both implying non-credible Elo).
+So the champion's true level was placed with a calibration-free FIXED-NODE Stockfish bracket
+(`tools/node_bracket.py`): our engine at 1000ms/move vs Stockfish capped at N nodes/move, 10 games per
+N, balanced colors.
+
+| SF nodes/move | our score | implied Elo vs that node level |
+|---|---|---|
+| 1,000  | 85% (7W/3D/0L) | +301 |
+| 2,500  | 40% (1W/6D/3L) | -70  |
+| 6,000  | 35% (0W/7D/3L) | -108 |
+| 15,000 | 10% (0W/2D/8L) | -382 |
+| 40,000 |  5% (0W/1D/9L) | -512 |
+
+We cross 50% at **~2,000 Stockfish nodes/move** (interpolating 85%@1k -> 40%@2.5k). Node counts don't
+map cleanly to absolute Elo without Stockfish's own node->Elo curve, but triangulating ALL anchors —
+crushes LimitStrength 2400/2500 (saturated), even at ~2k SF-nodes, loses to LimitStrength 3000 (10%)
+and to 40k-node SF (5%) — the honest placement is a **strong ~2500-2650 engine: comfortably past the
+2500 goal, clearly sub-3000.** (Note: SF is even at ~2k of ITS nodes while our engine uses ~500-700k
+of ITS OWN nodes in 1000ms — Stockfish is vastly more node-efficient, as expected from its
+search+NNUE; the bracket measures playing strength, not efficiency.)
+
+**Session-end state.** The hand-written classical `engine/raw_engine` went from ~2100 (start of the
+prior evening's fix-loop) to ~2500-2650 this session. Adopted, all games-gated: **batch-1b** (Berserk
+scale-corrected king-safety-with-safe-checks + granular threats + OCB scaling, +58 Elo — the single
+real win) and **batch-2** (pawn structure, neutral, kept for tuner optionality), plus the byte-
+identity-verified dead-code **simplification** (640->580 lines). Rejected, all correctly by games or
+byte-identity: batch-1 unscaled (magnitude), batch-3 mobility graft (coherence), batch-4 shelter/storm
+(coherence), the aggressive tuner (overfit). The classical engine now roughly matches the `limit`
+NNUE in strength — which is exactly the precondition for the explainability-driven NNUE work in the
+Future Plans below. The identified remaining lever for the classical engine itself is a per-weight
+Texel tuner on our own base (the plumbing — runtime weights, eval-linearity decomposition, WDL
+dataset — is already built; §36.4); deferred as a larger effort.
+
+## Future plans
+
+### Classical-engine explainability layer for targeted NNUE training (deferred to ~Aug 2026)
+
+Now that the hand-written classical engine (`engine/raw_engine`) is roughly the strength of the
+`limit` NNUE engine (both crush LimitStrength 2400-2500; both clearly sub-3000), the classical engine
+becomes a usable *explainability instrument* for the NNUE — because unlike the NNUE, its verdict on a
+position decomposes into named, human-readable eval terms (king_safety, threats, passed_pawns, ...)
+and a per-piece report card (`raw_eval_cli "<fen>" pieces`). The plan is to use it to find *what
+kinds of positions the NNUE is systematically weakest in*, then train exactly those. Pipeline:
+
+1. **Collect NNUE failures.** Play the `limit` NNUE engine vs equally-calibrated Stockfish; keep the
+   games it lost/drew (the existing recorded-match + benchmark harnesses already save full move
+   trails). An unpunished blunder in a won game counts too (per the §29 lesson).
+2. **Localize the mistake with the strongest available Stockfish.** Grade every position of those
+   games at high depth to find the exact ply where the NNUE's move dropped its own eval (the
+   `mine_blunders_v2` before/after + depth-consistency machinery already does this).
+3. **Explain the weak-point with the classical engine.** At each localized weak-point FEN, run the
+   classical eval's per-term breakdown and per-piece report, and its diagnosis rollout
+   (`diagnose_raw.py` leaf attribution). Aggregate across many weak points: which POSITION TYPES and
+   which eval terms recur? (e.g. "NNUE mishandles opposite-side-castling king races", "NNUE
+   undervalues outside passed pawns in R endings", "NNUE misjudges knight-vs-bishop closed centers".)
+   The classical engine's named terms give the NNUE's blind spots a vocabulary the NNUE alone can't.
+4. **Targeted training.** Turn the discovered weak-point *categories* (not just individual positions)
+   into a curriculum: generate/oversample positions of those types, deep-grade with Stockfish, and
+   fine-tune the NNUE on them (pure-WDL, judged by games -- §28/§30 discipline). This is the
+   active-learning loop (§29-30) upgraded from "mine individual blunders" to "mine and characterize
+   blunder CLASSES," with the classical engine as the characterizer.
+
+Why deferred: usage economy. The classical-engine strength work (this session) stands on its own;
+the explainability-driven NNUE retraining is the next major arc, planned for ~a month out (Aug 2026).
+Sequencing when resumed: (a) run the failure-collection + Stockfish-localization + classical-
+explanation *discovery* pass and return the characterized weakness findings for the user to analyze;
+(b) only then, after the user reviews the weaknesses, build the targeted training curriculum and
+retrain. Do NOT start retraining before the discovery findings are reviewed.

@@ -46,7 +46,7 @@ def rollout(fen, engine, plies, ms):
     return board.fen()
 
 
-def play_games(n_games, our_ms, sf_ms, sf_elo, max_plies):
+def play_games(n_games, our_ms, sf_ms, sf_elo, max_plies, as_black=False):
     env = dict(os.environ)
     env["RAW_WEIGHT"] = "1"
     our = chess.engine.SimpleEngine.popen_uci(RAW_BIN, env=env)
@@ -54,7 +54,7 @@ def play_games(n_games, our_ms, sf_ms, sf_elo, max_plies):
     sf.configure({"UCI_LimitStrength": True, "UCI_Elo": sf_elo, "Threads": 1})
     games = []
     for g in range(n_games):
-        we_white = (g % 2 == 0)
+        we_white = False if as_black else (g % 2 == 0)
         board = chess.Board()
         plies = []  # (fen_before, we_move, uci_move)
         while not board.is_game_over(claim_draw=True) and board.ply() < max_plies:
@@ -89,11 +89,12 @@ def main():
     p.add_argument("--swing-thresh", type=int, default=120)
     p.add_argument("--before-ceiling", type=int, default=600)
     p.add_argument("--top", type=int, default=15, help="report the N worst blunders")
+    p.add_argument("--as-black", action="store_true", help="play ALL games as Black")
     p.add_argument("--out", default="tools/elo_logs/raw_diagnosis.txt")
     args = p.parse_args()
 
     print(f"playing {args.games} games vs SF@{args.sf_elo}...", flush=True)
-    games = play_games(args.games, args.our_ms, args.sf_ms, args.sf_elo, args.max_plies)
+    games = play_games(args.games, args.our_ms, args.sf_ms, args.sf_elo, args.max_plies, args.as_black)
     w = sum(1 for g in games if g["result"] == 1.0)
     d = sum(1 for g in games if g["result"] == 0.5)
     l = sum(1 for g in games if g["result"] == 0.0)

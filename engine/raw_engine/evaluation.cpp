@@ -1,6 +1,7 @@
 #include "evaluation.h"
 
 #include <cctype>
+#include <cstdlib>
 
 #include "../../chess/bitboard/bitboard.h"
 #include "../../chess/bitboard/magic.h"
@@ -93,16 +94,45 @@ Bitboard knight2hop(int k) {
 // Expected-Time-to-Contact bonuses: [type][tier] tier1 = attacks king ring now,
 // tier2 = can attack it next move (graph reachability, not euclidean distance)
 constexpr int kContactMg[6][3] = {{0,0,0},{0,24,10},{0,18,8},{0,22,9},{0,30,14},{0,0,0}};
-constexpr int kContactEg[6][3] = {{0,0,0},{0,12,5},{0,10,4},{0,12,5},{0,16,7},{0,0,0}};
 
-constexpr Bitboard kCenterCore = 0x0000001818000000ULL;   // d4 e4 d5 e5
-constexpr Bitboard kCenterExt  = 0x00003C24243C0000ULL;   // c/f-file ring around core
-constexpr int kInfW[6] = {0, 5, 4, 4, 6, 0};
+
+// Berserk 4.7 tuned king-safety + threats weights (their scale ~= ours, pawn 100)
+constexpr int kKsAttW[6] = {0, 33, 32, 19, 25, 0};   // by type: p,N,B,R,Q,k
+constexpr int kKsKnightChk = 279, kKsBishopChk = 311, kKsRookChk = 272, kKsQueenChk = 213;
+constexpr int kKsUnsafeChk = 57, kKsWeakSq = 78, kKsNoQueen = -190, kKsKnightDef = -87;
+// threat[victim type p,N,B,R,Q,k] = {mg,eg}
+constexpr int kKnThrMg[6] = {0, -5, 38, 94, 80, 0};
+constexpr int kKnThrEg[6] = {22, 54, 44, 16, -53, 0};
+constexpr int kBiThrMg[6] = {4, 26, -66, 78, 69, 0};
+constexpr int kBiThrEg[6] = {23, 42, 81, 25, 25, 0};
+constexpr int kRkThrMg[6] = {0, 34, 38, 5, 56, 0};
+constexpr int kRkThrEg[6] = {26, 49, 63, 21, -50, 0};
+constexpr Bitboard kLightSq = 0x55AA55AA55AA55AAULL;
 
 // pawn-structure hash: doubled/isolated score + passer sets depend only on pawns.
 // NOTE: single shared table; raw path currently runs single-threaded.
 struct PawnEntry { Bitboard wp = ~0ULL, bp = 0; int mgP = 0, egP = 0; Bitboard passers[2] = {0, 0}; };
 PawnEntry g_pawnTable[1 << 15];
+
+
+// runtime category scales (/128). default identity -> byte-identical to untuned.
+struct TuneScales { int s[12]; };
+const TuneScales& tuneScales() {
+    static TuneScales t = [] {
+        TuneScales r; for (int i = 0; i < 12; i++) r.s[i] = 128;
+        if (const char* e = std::getenv("RAW_TUNE")) {
+            const char* p2 = e; int i = 0;
+            while (*p2 && i < 12) {
+                while (*p2 == ' ') p2++;
+                if (!*p2) break;
+                int v = std::atoi(p2); r.s[i++] = v;
+                while (*p2 && *p2 != ' ') p2++;
+            }
+        }
+        return r;
+    }();
+    return t;
+}
 
 int pieceTypeIdx(char lower) {
     switch (lower) {
@@ -171,9 +201,6 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
                              kingAttacks[kingSq[1]] | (1ULL << kingSq[1])};
 
     Bitboard passers[2] = {0, 0};
-    Bitboard vB[2] = {bishopAttacks(kingSq[0], occ), bishopAttacks(kingSq[1], occ)};
-    Bitboard vR[2] = {rookAttacks(kingSq[0], occ), rookAttacks(kingSq[1], occ)};
-    Bitboard vQ[2] = {vB[0] | vR[0], vB[1] | vR[1]};
     Bitboard pawnAtt[2] = {0, 0};
     {
         Bitboard wp = pawns[0];
@@ -181,14 +208,30 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
         Bitboard bp = pawns[1];
         while (bp) pawnAtt[1] |= blackPawnAttacks[popLsb(bp)];
     }
-    // kings defend their ring too
-    Bitboard attackedBy[2] = {pawnAtt[0] | kingAttacks[kingSq[0]],
-                               pawnAtt[1] | kingAttacks[kingSq[1]]};
+    // pawn double-attacks (for two-attack maps)
+    Bitboard pawnAtt2[2];
+    {
+        Bitboard wl = (pawns[0] & ~kFileA) << 7, wr = (pawns[0] & ~kFileH) << 9;
+        Bitboard bl = (pawns[1] & ~kFileA) >> 9, br = (pawns[1] & ~kFileH) >> 7;
+        pawnAtt2[0] = wl & wr;
+        pawnAtt2[1] = bl & br;
+    }
+    // per-type attack unions [side][0=p,1=N,2=B,3=R,4=Q,5=k], all-attacks, two-attacks
+    Bitboard pieceAtt[2][6] = {};
+    Bitboard twoAtt[2], attackedBy[2];
+    int ksWeight[2] = {0, 0}, ksCount[2] = {0, 0};
+    for (int S = 0; S < 2; S++) {
+        Bitboard kAtt = kingAttacks[kingSq[S]];
+        pieceAtt[S][0] = pawnAtt[S];
+        pieceAtt[S][5] = kAtt;
+        attackedBy[S] = pawnAtt[S] | kAtt;
+        twoAtt[S] = pawnAtt2[S] | (pawnAtt[S] & kAtt);
+    }
 
     int mgMob = 0, egMob = 0, mgBMob = 0, egBMob = 0, mgPQ = 0, egPQ = 0;
-    int mgOut = 0, egOut = 0, mgCtr = 0, egCtr = 0;
+    int egEndK = 0;
     int mgPawn = 0, egPawn = 0, mgPassed = 0, egPassed = 0, mgKing = 0;
-    int mgRook = 0, egRook = 0, mgBP = 0, egBP = 0, mgShield = 0;
+    int mgRook = 0, egRook = 0, mgBP = 0, egBP = 0, mgShield = 0, egKingS = 0;
     int mgThreat = 0, egThreat = 0, mgHang = 0, egHang = 0;
 
     {
@@ -204,7 +247,28 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
                     int sq = popLsb(pp);
                     int f = fileOf(sq);
                     if (popcount(pawns[ps] & fileBB(f)) > 1) { pe.mgP -= psgn * 8; pe.egP -= psgn * 14; }
-                    if (!(pawns[ps] & adjacentFilesBB(f))) { pe.mgP -= psgn * 12; pe.egP -= psgn * 9; }
+                    bool hasNeighbor = pawns[ps] & adjacentFilesBB(f);
+                    if (!hasNeighbor) { pe.mgP -= psgn * 12; pe.egP -= psgn * 9; }
+                    // supported: friendly pawns defending this pawn (Berserk DEFENDED_PAWN 13/10 halved)
+                    Bitboard pdef = pawns[ps] & (ps == 0 ? blackPawnAttacks[sq] : whitePawnAttacks[sq]);
+                    int nd = popcount(pdef);
+                    pe.mgP += psgn * 6 * nd; pe.egP += psgn * 5 * nd;
+                    // phalanx: adjacent-file same-rank friendly pawn (rank-scaled, halved shape)
+                    if (pawns[ps] & adjacentFilesBB(f) & (kRank1 << (8 * rankOf(sq)))) {
+                        int rr = ps == 0 ? rankOf(sq) : 7 - rankOf(sq);
+                        static const int cMg[8] = {0, 0, 8, 7, 3, 3, 1, 0};
+                        static const int cEg[8] = {0, 0, 12, 7, 2, 2, 0, 0};
+                        pe.mgP += psgn * cMg[rr]; pe.egP += psgn * cEg[rr];
+                    }
+                    // backward: advance square attacked by enemy pawn, not defended by a friendly pawn
+                    if (hasNeighbor) {
+                        int adv = ps == 0 ? sq + 8 : sq - 8;
+                        if (adv >= 0 && adv < 64) {
+                            Bitboard advAtk = (ps == 0 ? blackPawnAttacks[adv] : whitePawnAttacks[adv]) & pawns[ps == 0 ? 1 : 0];
+                            Bitboard advDef = pawns[ps] & adjacentFilesBB(f) & passedMask(sq, ps == 0);
+                            if (advAtk && !advDef) { pe.mgP -= psgn * 4; pe.egP -= psgn * 9; }
+                        }
+                    }
                     if (!(pawns[ps == 0 ? 1 : 0] & passedMask(sq, ps == 0))) pe.passers[ps] |= (1ULL << sq);
                 }
             }
@@ -223,15 +287,12 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
         Bitboard mobArea = ~own[side] & ~pawnAtt[enemy];
 
         if (popcount(bb[side][2]) >= 2) { mgBP += sgn * 25; egBP += sgn * 45; }
-
-        // pawns
-        Bitboard p = pawns[side];
-        while (p) {
-            int sq = popLsb(p);
-            int f = fileOf(sq);
-            if (popcount(pawns[side] & fileBB(f)) > 1) { mgPawn -= sgn * 8; egPawn -= sgn * 14; }
-            if (!(pawns[side] & adjacentFilesBB(f))) { mgPawn -= sgn * 12; egPawn -= sgn * 9; }
-
+        // minor behind a pawn (Berserk MINOR_BEHIND_PAWN 6/14 halved): shelter/support
+        {
+            Bitboard minors = bb[side][1] | bb[side][2];
+            Bitboard behind = minors & (side == 0 ? (allPawns >> 8) : (allPawns << 8));
+            int nb = popcount(behind);
+            mgBP += sgn * 3 * nb; egBP += sgn * 7 * nb;
         }
 
         // knights
@@ -239,111 +300,64 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
         while (n) {
             int sq = popLsb(n);
             Bitboard att = knightAttacks[sq];
-            attackedBy[side] |= att;
+            twoAtt[side] |= attackedBy[side] & att; attackedBy[side] |= att; pieceAtt[side][1] |= att;
+            if (att & kingRing[enemy]) { ksWeight[side] += kKsAttW[1]; ksCount[side]++; }
             int mob = popcount(att & mobArea);
             mgMob += sgn * kMobilityMg[1] * (mob - 4);
             egMob += sgn * kMobilityEg[1] * (mob - 4);
             if (att & kingRing[enemy]) { attackUnits += kAttackUnits[1]; attackerCount++; }
-            {
-                int inf = 2 * popcount(att & kingRing[enemy]) +
-                          popcount(knight2hop(sq) & kingRing[enemy]) +
-                          2 * popcount(att & kingRing[enemy] & pawnAtt[side]);
-                int v = kInfW[1] * inf; if (v > 45) v = 45;
-                mgPQ += sgn * v; egPQ += sgn * v / 2;
-            }
-            mgCtr += sgn * (3 * popcount(att & kCenterCore) + popcount(att & kCenterExt));
-            egCtr += sgn * popcount(att & kCenterCore);
-            if (pawnAtt[side] & (1ULL << sq)) { mgPQ += sgn * 8; egPQ += sgn * 4; }
-            {
-                int defended = popcount(att & own[side] & ~pawns[side]);
-                mgPQ += sgn * 3 * (defended > 3 ? 3 : defended);
-            }
-            int rel = side == 0 ? rankOf(sq) : 7 - rankOf(sq);
-            if (rel >= 3 && rel <= 5 && (pawnAtt[side] & (1ULL << sq)) &&
-                !(pawns[enemy] & passedMask(sq, side == 0) & adjacentFilesBB(fileOf(sq)))) {
-                mgOut += sgn * 28; egOut += sgn * 16;
-            }
-            {
-                int relr = side == 0 ? rankOf(sq) : 7 - rankOf(sq);
-                if (mob <= 1 && relr > 0) { mgPQ -= sgn * 40; egPQ -= sgn * 30; }
-            }
+            // knight one move away from attacking the enemy king ring: rim PSTs
+            // can't see concrete approach maneuvers (Na5-b3 class)
+            else if (knight2hop(sq) & kingRing[enemy]) { mgPQ += sgn * 12; egPQ += sgn * 6; }
         }
         // bishops
         Bitboard b = bb[side][2];
         while (b) {
             int sq = popLsb(b);
             Bitboard att = bishopAttacks(sq, occ);
-            attackedBy[side] |= att;
+            twoAtt[side] |= attackedBy[side] & att; attackedBy[side] |= att; pieceAtt[side][2] |= att;
+            if (att & kingRing[enemy]) { ksWeight[side] += kKsAttW[2]; ksCount[side]++; }
             int mob = popcount(att & mobArea);
             mgBMob += sgn * kMobilityMg[2] * (mob - 6);
             egBMob += sgn * kMobilityEg[2] * (mob - 6);
             if (att & kingRing[enemy]) { attackUnits += kAttackUnits[2]; attackerCount++; }
-            {
-                int inf = 2 * popcount(att & kingRing[enemy]) + popcount(att & vB[enemy]) +
-                          2 * popcount(att & kingRing[enemy] & pawnAtt[side]);
-                int v = kInfW[2] * inf; if (v > 45) v = 45;
-                mgPQ += sgn * v; egPQ += sgn * v / 2;
-            }
-            mgCtr += sgn * (3 * popcount(att & kCenterCore) + popcount(att & kCenterExt));
-            egCtr += sgn * popcount(att & kCenterCore);
-            {
-                int defended = popcount(att & own[side] & ~pawns[side]);
-                mgPQ += sgn * 3 * (defended > 3 ? 3 : defended);
-            }
-            {
-                int relr = side == 0 ? rankOf(sq) : 7 - rankOf(sq);
-                if (mob <= 1 && relr > 0) { mgPQ -= sgn * 40; egPQ -= sgn * 30; }
-            }
         }
         // rooks
         Bitboard r = bb[side][3];
         while (r) {
             int sq = popLsb(r);
             Bitboard att = rookAttacks(sq, occ);
-            attackedBy[side] |= att;
+            twoAtt[side] |= attackedBy[side] & att; attackedBy[side] |= att; pieceAtt[side][3] |= att;
+            if (att & kingRing[enemy]) { ksWeight[side] += kKsAttW[3]; ksCount[side]++; }
             int mob = popcount(att & mobArea);
             mgMob += sgn * kMobilityMg[3] * (mob - 7);
             egMob += sgn * kMobilityEg[3] * (mob - 7);
             if (att & kingRing[enemy]) { attackUnits += kAttackUnits[3]; attackerCount++; }
-            {
-                int inf = 2 * popcount(att & kingRing[enemy]) + popcount(att & vR[enemy]) +
-                          2 * popcount(att & kingRing[enemy] & pawnAtt[side]);
-                int v = kInfW[3] * inf; if (v > 45) v = 45;
-                mgPQ += sgn * v; egPQ += sgn * v / 2;
-            }
-            if (att & (bb[side][3] | bb[side][4])) { mgPQ += sgn * 10; egPQ += sgn * 5; }  // battery/connected
-            {
-                int relr = side == 0 ? rankOf(sq) : 7 - rankOf(sq);
-                if (mob <= 1 && relr > 0) { mgPQ -= sgn * 30; egPQ -= sgn * 20; }
-            }
             int f = fileOf(sq);
             if (!(allPawns & fileBB(f))) { mgRook += sgn * 25; egRook += sgn * 12; }
             else if (!(pawns[side] & fileBB(f))) { mgRook += sgn * 12; egRook += sgn * 6; }
+            // rook trapped behind an uncastled king (classic Rh1/Kg1, Ra1/Kb1)
+            int kf = fileOf(kingSq[side]);
+            int relr = side == 0 ? rankOf(sq) : 7 - rankOf(sq);
+            int krelr = side == 0 ? rankOf(kingSq[side]) : 7 - rankOf(kingSq[side]);
+            if (relr == 0 && krelr == 0) {
+                if ((f > kf && kf >= 4 && kf <= 6) || (f < kf && kf >= 1 && kf <= 3)) {
+                    mgRook -= sgn * 21; egRook -= sgn * 15;
+                }
+            }
         }
         // queens
         Bitboard q = bb[side][4];
         while (q) {
             int sq = popLsb(q);
             Bitboard att = queenAttacks(sq, occ);
-            attackedBy[side] |= att;
+            twoAtt[side] |= attackedBy[side] & att; attackedBy[side] |= att; pieceAtt[side][4] |= att;
+            if (att & kingRing[enemy]) { ksWeight[side] += kKsAttW[4]; ksCount[side]++; }
             int mob = popcount(att & mobArea);
             mgMob += sgn * kMobilityMg[4] * (mob - 13);
             egMob += sgn * kMobilityEg[4] * (mob - 13);
             if (att & kingRing[enemy]) { attackUnits += kAttackUnits[4]; attackerCount++; }
-            {
-                int inf = 2 * popcount(att & kingRing[enemy]) + popcount(att & vQ[enemy]) +
-                          2 * popcount(att & kingRing[enemy] & pawnAtt[side]);
-                int v = kInfW[4] * inf; if (v > 60) v = 60;
-                mgPQ += sgn * v; egPQ += sgn * v / 2;
-            }
         }
-        // king safety: nonlinear in total attack units; single attacker ~ harmless
-        if (attackerCount >= 2 && bb[side][4]) {
-            int idx = attackUnits * attackerCount / 2;
-            if (idx > 63) idx = 63;
-            mgKing += sgn * kSafetyTable[idx] * phase / kMaxPhase;
-        }
-
         // pawn shield in front of own king (mg only)
         int kf = fileOf(kingSq[side]);
         Bitboard shieldZone = (fileBB(kf) | adjacentFilesBB(kf));
@@ -371,29 +385,86 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
                 if (own[enemy] & (1ULL << stop)) { mgB /= 2; egB /= 2; }          // blockaded
                 else if ((attackedBy[enemy] & (1ULL << stop)) &&
                          !(attackedBy[side] & (1ULL << stop))) { mgB = mgB * 2 / 3; egB = egB * 2 / 3; }
+
+                // endgame technique (eg-only): kings escort passers; control of
+                // the promotion path counts. The permanently-zero endgameKing row
+                // was indicted three times before this went in.
+                auto cheb = [](int a, int b) {
+                    int df = fileOf(a) - fileOf(b); if (df < 0) df = -df;
+                    int dr = rankOf(a) - rankOf(b); if (dr < 0) dr = -dr;
+                    return df > dr ? df : dr;
+                };
+                egEndK += sgn * 6 * (cheb(kingSq[enemy], stop) - cheb(kingSq[side], stop));
+                Bitboard path = 0;
+                for (int t2 = stop; t2 >= 0 && t2 < 64; t2 += (side == 0 ? 8 : -8)) path |= (1ULL << t2);
+                egEndK += sgn * 4 * (popcount(path & attackedBy[side]) -
+                                      popcount(path & attackedBy[enemy]));
             }
             mgPassed += sgn * mgB;
             egPassed += sgn * egB;
         }
     }
 
-    // threats: minor/major attacked by an enemy pawn; any non-pawn attacked and undefended
+    // King safety with SAFE CHECKS (Berserk 4.7 formula + tuned weights). Defender S,
+    // attacker X. danger accumulates attacker weight*count, safe checks by type,
+    // weak king-ring squares, no-enemy-queen and knight-defender adjustments; then
+    // a nonlinear danger^2/1024 penalty (the single biggest classical KS lever).
+    for (int S = 0; S < 2; S++) {
+        int X = S ^ 1;
+        int ksq = kingSq[S];
+        Bitboard kArea = kingRing[S];
+        Bitboard weak = attackedBy[X] & ~twoAtt[S] &
+                        (~attackedBy[S] | pieceAtt[S][4] | pieceAtt[S][5]);
+        Bitboard vuln = (~attackedBy[S] | (weak & twoAtt[X])) & ~own[X];
+        Bitboard bA = bishopAttacks(ksq, occ), rA = rookAttacks(ksq, occ);
+        Bitboard nChk = knightAttacks[ksq] & pieceAtt[X][1] & ~own[X];
+        Bitboard bChk = bA & pieceAtt[X][2] & ~own[X];
+        Bitboard rChk = rA & pieceAtt[X][3] & ~own[X];
+        Bitboard qChk = (bA | rA) & pieceAtt[X][4] & ~own[X];
+        int unsafe = popcount((nChk | bChk | rChk) & ~vuln);
+        int danger = ksWeight[X] * ksCount[X]
+                     + kKsKnightChk * popcount(nChk & vuln)
+                     + kKsBishopChk * popcount(bChk & vuln)
+                     + kKsRookChk   * popcount(rChk & vuln)
+                     + kKsQueenChk  * popcount(qChk & vuln)
+                     + kKsUnsafeChk * unsafe
+                     + kKsWeakSq    * popcount(weak & kArea)
+                     + kKsNoQueen   * (bb[X][4] == 0)
+                     + kKsKnightDef * ((pieceAtt[S][1] & kArea) != 0);
+        if (danger > 0) {
+            int sgnDef = (S == 0) ? -1 : 1;   // danger to S hurts S (white-relative)
+            mgKing += sgnDef * danger * danger / 2048;
+            egKingS += sgnDef * danger / 64;
+        }
+    }
+
+    // Threats (Berserk 4.7): threat-by-knight/bishop/rook per victim type, plus the
+    // big safe-pawn threat and hanging pieces. weak = squares we attack that the
+    // enemy does not adequately cover.
     for (int side = 0; side < 2; side++) {
         int sgn = side == 0 ? 1 : -1;
-        int enemy = side ^ 1;
-        Bitboard nonPawn = own[side] & ~pawns[side] & ~(1ULL << kingSq[side]);
-        int pawnThreatened = popcount(nonPawn & pawnAtt[enemy]);
-        mgThreat -= sgn * 40 * pawnThreatened;
-        egThreat -= sgn * 30 * pawnThreatened;
-        Bitboard hangingBB = nonPawn & attackedBy[enemy] & ~attackedBy[side];
-        while (hangingBB) {
-            int hsq = popLsb(hangingBB);
-            int ht = pieceTypeIdx(static_cast<char>(std::tolower(
-                static_cast<unsigned char>(pos.pieceAt(hsq)))));
-            // scaled by victim value: losing a hanging queen is not 22cp
-            mgHang -= sgn * kMgVal[ht] / 8;
-            egHang -= sgn * kEgVal[ht] / 8;
-        }
+        int X = side ^ 1;
+        Bitboard covered = pieceAtt[X][0] | (twoAtt[X] & ~twoAtt[side]);
+        Bitboard nonPawnEnemies = own[X] & ~pawns[X];
+        Bitboard weak = ~covered & attackedBy[side];
+        auto victimIdx = [&](int sq) {
+            return pieceTypeIdx(static_cast<char>(std::tolower(
+                static_cast<unsigned char>(pos.pieceAt(sq)))));
+        };
+        Bitboard t;
+        t = pieceAtt[side][1] & own[X] & (nonPawnEnemies | weak);
+        while (t) { int v = victimIdx(popLsb(t)); mgThreat += sgn * kKnThrMg[v] / 2; egThreat += sgn * kKnThrEg[v] / 2; }
+        t = pieceAtt[side][2] & own[X] & (nonPawnEnemies | weak);
+        while (t) { int v = victimIdx(popLsb(t)); mgThreat += sgn * kBiThrMg[v] / 2; egThreat += sgn * kBiThrEg[v] / 2; }
+        t = pieceAtt[side][3] & own[X] & weak;
+        while (t) { int v = victimIdx(popLsb(t)); mgThreat += sgn * kRkThrMg[v] / 2; egThreat += sgn * kRkThrEg[v] / 2; }
+        // safe pawn threat (big): a pawn attacks an enemy non-pawn
+        int pawnThr = popcount(nonPawnEnemies & pawnAtt[side]);
+        mgThreat += sgn * 47 * pawnThr; egThreat += sgn * 22 * pawnThr;
+        // hanging: enemy pieces we attack that they don't defend at all
+        Bitboard hangingBB = own[X] & ~attackedBy[X] & attackedBy[side];
+        int hangCnt = popcount(hangingBB);
+        mgHang += sgn * 5 * hangCnt; egHang += sgn * 12 * hangCnt;
     }
 
     auto taper = [&](int m, int e) { return (m * phase + e * (kMaxPhase - phase)) / kMaxPhase; };
@@ -408,13 +479,26 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
     int hang = taper(mgHang, egHang);
     int rookF = taper(mgRook, egRook);
     int bp = taper(mgBP, egBP);
-    int kingA = taper(mgKing, 0);
+    int kingA = taper(mgKing, egKingS);
     int shieldS = taper(mgShield, 0);
     int pq = taper(mgPQ, egPQ);
-    int outp = taper(mgOut, egOut);
-    int ctr = taper(mgCtr, egCtr);
-    int score = material + pst + mob + bmob + pawnS + passed + thr + hang +
-                rookF + bp + kingA + shieldS + pq + outp + ctr + tempoVal;
+    int endK = taper(0, egEndK);
+    const TuneScales& ts = tuneScales();
+    mob = mob * ts.s[0] / 128; bmob = bmob * ts.s[1] / 128;
+    kingA = kingA * ts.s[2] / 128;
+    int thrhang = (thr + hang) * ts.s[3] / 128;
+    passed = passed * ts.s[4] / 128; pawnS = pawnS * ts.s[5] / 128;
+    pq = pq * ts.s[6] / 128; rookF = rookF * ts.s[7] / 128;
+    bp = bp * ts.s[8] / 128; endK = endK * ts.s[9] / 128;
+    int score = material + pst + mob + bmob + pawnS + passed + thrhang +
+                rookF + bp + kingA + shieldS + pq + endK + tempoVal;
+    // opposite-colored-bishop endgame scaling: OCB endings are very drawish
+    if (popcount(bb[0][2]) == 1 && popcount(bb[1][2]) == 1 &&
+        ((bb[0][2] & kLightSq) != 0) != ((bb[1][2] & kLightSq) != 0)) {
+        bool minorsOnly = (bb[0][1] | bb[1][1] | bb[0][3] | bb[1][3] | bb[0][4] | bb[1][4]) == 0;
+        int scale = minorsOnly ? 64 : 96;
+        score = score * scale / 128;
+    }
     if (bd) {
         bd->material = material; bd->pst = pst;
         bd->mobility = mob; bd->bishopMobility = bmob;
@@ -422,7 +506,8 @@ int evaluateWhiteRelative(const chess::bitboard::Position& pos, EvalBreakdown* b
         bd->pawnStructure = pawnS; bd->passedPawns = passed;
         bd->threats = thr; bd->hangingPieces = hang;
         bd->rookFiles = rookF; bd->bishopPair = bp;
-        bd->pieceQuality = pq; bd->knightOutposts = outp; bd->centerControl = ctr;
+        bd->pieceQuality = pq;
+        bd->endgameKing = endK;
         bd->tempo = tempoVal; bd->phase = phase; bd->total = score;
     }
     return score;
