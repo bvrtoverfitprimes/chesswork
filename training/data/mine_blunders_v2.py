@@ -73,8 +73,16 @@ def play_games(n_games, our_ms, sf_ms, sf_elo, threads, max_plies):
 
 
 def detect_blunders(games, grade_depth, workers, swing_thresh, skip_won, before_ceiling=600):
-    """Grade every position of non-won games; return FENs of positions where OUR
-    move dropped our eval by >= swing_thresh (i.e. our blunder input positions).
+    """Grade every position of non-won games; return (fen_before, fen_after) pairs
+    where OUR move dropped our eval by >= swing_thresh (i.e. our blunder + the
+    position it produced).
+
+    Returning the pair, not just fen_before, matters because blunder detection
+    runs at a shallow-ish `grade_depth`: shallow Stockfish can misjudge either
+    side of the pair (see WORKLOG's mate-depth-artifact finding), so the swing
+    measured here is only provisional. Keeping fen_after alongside fen_before
+    lets the caller deep-grade both and directly check whether the swing still
+    holds at deep depth, instead of trusting the shallow grade blindly.
 
     `before_ceiling` filters out positions that were already decisively lost/won
     (|our_advantage_before| > ceiling) before our move. In an already-hopeless
@@ -102,7 +110,7 @@ def detect_blunders(games, grade_depth, workers, swing_thresh, skip_won, before_
         cp = r["cp"] if r["cp"] is not None else (2000 if r["mate"] and r["mate"] > 0 else -2000)
         by_fen[r["fen"]] = cp
 
-    blunders = []
+    blunder_pairs = []
     for gi, game in enumerate(games):
         if skip_won and game["result"] == 1.0:
             continue
@@ -119,11 +127,11 @@ def detect_blunders(games, grade_depth, workers, swing_thresh, skip_won, before_
             if abs(adv_before) > before_ceiling:
                 continue  # already decisively lost/won before our move; skip
             if adv_before - adv_after >= swing_thresh:
-                blunders.append(fen_before)
-    print(f"detected {len(blunders)} blunder positions "
+                blunder_pairs.append((fen_before, fen_after))
+    print(f"detected {len(blunder_pairs)} blunder positions "
           f"(eval dropped >= {swing_thresh}cp on our move, "
           f"|before| <= {before_ceiling}cp)", flush=True)
-    return blunders
+    return blunder_pairs
 
 
 def perturb(fen, rng, n_variants, max_tries=60):
@@ -193,8 +201,8 @@ def main():
     # a weak point even in games we won/drew (the opponent just didn't punish it).
     p.add_argument("--skip-won", dest="skip_won", action="store_true", default=False)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--games-cache", default="training/data/raw/blunder_games.json")
-    p.add_argument("--out", default="training/data/raw/blunder_labeled.jsonl")
+    p.add_argument("--games-cache", default="training/data/raw/blunder_games_v2.json")
+    p.add_argument("--out", default="training/data/raw/blunder_labeled_v2.jsonl")
     args = p.parse_args()
     rng = random.Random(args.seed)
 
@@ -214,22 +222,60 @@ def main():
     lost = sum(1 for g in games if g["result"] == 0.0)
     print(f"games: {won}W / {drew}D / {lost}L", flush=True)
 
-    blunders = detect_blunders(games, args.grade_depth, args.workers, args.swing_thresh,
-                                args.skip_won, args.before_ceiling)
-    if not blunders:
+    blunder_pairs = detect_blunders(games, args.grade_depth, args.workers, args.swing_thresh,
+                                     args.skip_won, args.before_ceiling)
+    if not blunder_pairs:
         print("no blunders found; nothing to train on.", flush=True)
         return
 
-    # dedupe blunder positions, then perturb each
-    blunders = list(dict.fromkeys(blunders))
-    all_fens = list(blunders)
-    for fen in blunders:
+    # dedupe (fen_before, fen_after) pairs, then perturb each fen_before
+    blunder_pairs = list(dict.fromkeys(blunder_pairs))
+    befores = [b for b, _a in blunder_pairs]
+    afters = [a for _b, a in blunder_pairs]
+    # Both the blunder position (before) and the position it produced (after)
+    # go into the deep-grading set explicitly, on top of the usual
+    # near-neighbour perturbations of `before` -- see detect_blunders docstring.
+    all_fens = list(befores) + list(afters)
+    for fen in befores:
         all_fens.extend(perturb(fen, rng, args.variants))
     all_fens = list(dict.fromkeys(all_fens))
-    print(f"mined {len(blunders)} blunders -> {len(all_fens)} positions "
-          f"(with {args.variants} perturbations each); grading at depth {args.deep_depth}...", flush=True)
+    print(f"mined {len(blunder_pairs)} blunders -> {len(all_fens)} positions "
+          f"(before+after pairs + {args.variants} perturbations each); "
+          f"grading at depth {args.deep_depth}...", flush=True)
 
     labeled = label_positions_parallel(all_fens, DEFAULT_STOCKFISH_PATH, args.deep_depth, args.workers)
+    by_fen_deep = {r["fen"]: (r["cp"] if r["cp"] is not None
+                               else (2000 if r["mate"] and r["mate"] > 0 else -2000))
+                   for r in labeled}
+
+    # Diagnostic: how many blunders detected at `grade_depth` still show a real
+    # swing at `deep_depth`? A shallow/deep mismatch here is exactly the kind of
+    # teacher-depth artifact WORKLOG's mate-depth-artifact finding flagged --
+    # this reports the discrepancy instead of silently trusting the shallow grade.
+    we_white_by_fen = {}
+    for game in games:
+        for fen, we_move in game["plies"]:
+            if we_move:
+                we_white_by_fen[fen] = game["we_white"]
+    confirmed = 0
+    checked = 0
+    for fen_before, fen_after in blunder_pairs:
+        if fen_before not in by_fen_deep or fen_after not in by_fen_deep:
+            continue
+        we_white = we_white_by_fen.get(fen_before)
+        if we_white is None:
+            continue
+        checked += 1
+        deep_before = our_advantage_cp(by_fen_deep[fen_before], we_white)
+        deep_after = our_advantage_cp(by_fen_deep[fen_after], we_white)
+        if deep_before - deep_after >= args.swing_thresh / 2:
+            confirmed += 1
+    if checked:
+        print(f"depth-consistency check: {confirmed}/{checked} blunders still show >= "
+              f"{args.swing_thresh / 2:.0f}cp swing at depth {args.deep_depth} "
+              f"({100.0 * confirmed / checked:.0f}% confirmed, rest are likely "
+              f"shallow-grading artifacts)", flush=True)
+
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         for r in labeled:

@@ -1,15 +1,15 @@
 selfplay.pgn
 engine_gameplay
 engine_selfplay
-train_human_limit
+train_limit
 tools/bestmove_cli
 tests/test_chess
 tests/simple_demo
 tests/test_nnue_features
 tests/test_accumulator
 tests/test_fast_legality
-engine/human_limit/weights.txt
-engine/human_limit/*.bin
+engine/limit/weights.txt
+engine/limit/*.bin
 tools/elo_logs/
 tools/external/
 tools/eval_cli
@@ -22,3 +22,4 @@ training/data/processed/
 training/.venv/
 __pycache__/
 *.pyc
+*.bak

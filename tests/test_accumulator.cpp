@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "../chess/board.h"
-#include "../engine/human_limit/accumulator.h"
-#include "../engine/human_limit/network.h"
+#include "../engine/limit/accumulator.h"
+#include "../engine/limit/network.h"
 
 namespace {
 
@@ -28,11 +28,11 @@ double maxAbsDiff(const std::vector<float>& a, const std::vector<float>& b) {
     return m;
 }
 
-void runRandomWalk(const human_limit::Network& net, const std::string& fen, int plies, uint32_t seed,
+void runRandomWalk(const limit::Network& net, const std::string& fen, int plies, uint32_t seed,
                     const std::string& label) {
     chess::Game game(fen);
-    human_limit::Accumulator acc;
-    human_limit::initAccumulator(net, game.boardArray(), &acc);
+    limit::Accumulator acc;
+    limit::initAccumulator(net, game.boardArray(), &acc);
 
     std::mt19937 rng(seed);
     constexpr double kTol = 1e-3;
@@ -48,10 +48,10 @@ void runRandomWalk(const human_limit::Network& net, const std::string& fen, int 
         char promo = (uci.size() == 5) ? uci[4] : 'q';
 
         auto undo = game.makeMove(from, to, promo);
-        human_limit::applyMoveToAccumulator(net, game.boardArray(), undo, acc, &acc);
+        limit::applyMoveToAccumulator(net, game.boardArray(), undo, acc, &acc);
 
-        human_limit::Accumulator fromScratch;
-        human_limit::initAccumulator(net, game.boardArray(), &fromScratch);
+        limit::Accumulator fromScratch;
+        limit::initAccumulator(net, game.boardArray(), &fromScratch);
 
         double dw = maxAbsDiff(acc.white, fromScratch.white);
         double db = maxAbsDiff(acc.black, fromScratch.black);
@@ -65,8 +65,8 @@ void runRandomWalk(const human_limit::Network& net, const std::string& fen, int 
 }
 
 int main() {
-    human_limit::Network net;
-    bool loaded = net.load("engine/human_limit/nnue_weights.bin");
+    limit::Network net;
+    bool loaded = net.load("engine/limit/nnue_weights.bin");
     check(loaded, "weights load for accumulator test");
     if (!loaded) {
         std::cout << "TESTS FAILED\n";

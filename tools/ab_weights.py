@@ -9,7 +9,7 @@ OUR = os.path.join(REPO, "tools", "uci_engine.exe")
 
 
 def open_engine(weights, threads=1):
-    os.environ["HL_WEIGHTS"] = weights
+    os.environ["LIMIT_WEIGHTS"] = weights
     eng = chess.engine.SimpleEngine.popen_uci(OUR)
     if threads > 1:
         try:

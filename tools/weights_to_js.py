@@ -16,7 +16,7 @@ def take(vals, idx, count):
 
 
 def main():
-    weights_path = sys.argv[1] if len(sys.argv) > 1 else "engine/human_limit/weights.txt"
+    weights_path = sys.argv[1] if len(sys.argv) > 1 else "engine/limit/weights.txt"
     vals = read_floats(weights_path)
     idx = 0
 

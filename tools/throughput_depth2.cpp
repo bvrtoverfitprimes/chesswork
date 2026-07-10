@@ -7,8 +7,8 @@
 #include "../chess/bitboard/magic.h"
 #include "../chess/bitboard/position.h"
 #include "../chess/board.h"
-#include "../engine/human_limit/network.h"
-#include "../engine/human_limit/search.h"
+#include "../engine/limit/network.h"
+#include "../engine/limit/search.h"
 #include "../engine/old_engine/search.h"
 
 int main(int argc, char** argv) {
@@ -18,13 +18,13 @@ int main(int argc, char** argv) {
     chess::bitboard::initAttackTables();
     chess::bitboard::initMagics();
 
-    human_limit::Network net;
-    net.load("engine/human_limit/nnue_weights.bin");
+    limit::Network net;
+    net.load("engine/limit/nnue_weights.bin");
 
     std::mt19937 rng(42);
 
     {
-        human_limit::Searcher searcher(net);
+        limit::Searcher searcher(net);
         long totalNodes = 0;
         auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < iterations; i++) {
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
         auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - t0).count();
         double posPerSec = iterations * 1000.0 / std::max<long long>(elapsedMs, 1);
-        std::cout << "human_limit depth=" << depth << ": " << iterations << " positions in "
+        std::cout << "limit depth=" << depth << ": " << iterations << " positions in "
                   << elapsedMs << "ms -> " << posPerSec << " pos/sec, "
                   << (double(elapsedMs) / iterations) << "ms/pos, avg_nodes="
                   << (totalNodes / iterations) << "\n";

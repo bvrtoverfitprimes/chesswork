@@ -10,7 +10,7 @@ def main():
     parser.add_argument("--positions", default="training/data/raw/lichess_400k.jsonl")
     parser.add_argument("--sample", type=int, default=1000)
     parser.add_argument("--eval-cli", default="tools/eval_cli")
-    parser.add_argument("--weights", default="engine/human_limit/nnue_weights.bin")
+    parser.add_argument("--weights", default="engine/limit/nnue_weights.bin")
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 

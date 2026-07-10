@@ -6,9 +6,9 @@
 #include "../chess/bitboard/bitboard.h"
 #include "../chess/bitboard/magic.h"
 #include "../chess/bitboard/position.h"
-#include "../engine/human_limit/accumulator.h"
-#include "../engine/human_limit/network.h"
-#include "../engine/human_limit/nnue_features.h"
+#include "../engine/limit/accumulator.h"
+#include "../engine/limit/network.h"
+#include "../engine/limit/nnue_features.h"
 
 using namespace chess::bitboard;
 
@@ -18,8 +18,8 @@ int main(int argc, char** argv) {
     initAttackTables();
     initMagics();
 
-    human_limit::Network net;
-    net.load("engine/human_limit/nnue_weights.bin");
+    limit::Network net;
+    net.load("engine/limit/nnue_weights.bin");
 
     std::mt19937 rng(7);
     std::vector<Position> positions;
@@ -59,9 +59,9 @@ int main(int argc, char** argv) {
         volatile double sink = 0;
         for (int i = 0; i < iterations; i++) {
             auto& pos = positions[i % positions.size()];
-            human_limit::Accumulator acc;
-            human_limit::initAccumulator(net, pos, &acc);
-            int bucket = human_limit::outputBucketFromPieceCount(acc.pieceCount);
+            limit::Accumulator acc;
+            limit::initAccumulator(net, pos, &acc);
+            int bucket = limit::outputBucketFromPieceCount(acc.pieceCount);
             sink += net.evaluateFromAccumulators(acc.white, acc.black, pos.turn(), bucket);
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -75,8 +75,8 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < iterations; i++) {
             auto& pos = positions[i % positions.size()];
-            human_limit::Accumulator acc;
-            human_limit::initAccumulator(net, pos, &acc);
+            limit::Accumulator acc;
+            limit::initAccumulator(net, pos, &acc);
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - t0).count();
@@ -87,12 +87,12 @@ int main(int argc, char** argv) {
     // 2c. Just the head forward pass, given a precomputed accumulator (the incremental-update steady state).
     {
         auto& pos0 = positions[0];
-        human_limit::Accumulator acc;
-        human_limit::initAccumulator(net, pos0, &acc);
+        limit::Accumulator acc;
+        limit::initAccumulator(net, pos0, &acc);
         auto t0 = std::chrono::steady_clock::now();
         volatile double sink = 0;
         for (int i = 0; i < iterations; i++) {
-            int bucket = human_limit::outputBucketFromPieceCount(acc.pieceCount);
+            int bucket = limit::outputBucketFromPieceCount(acc.pieceCount);
             sink += net.evaluateFromAccumulators(acc.white, acc.black, pos0.turn(), bucket);
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -122,15 +122,15 @@ int main(int argc, char** argv) {
     {
         auto& pos = positions[0];
         auto moves = pos.getValidMoves();
-        human_limit::Accumulator acc;
-        human_limit::initAccumulator(net, pos, &acc);
+        limit::Accumulator acc;
+        limit::initAccumulator(net, pos, &acc);
         auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < iterations; i++) {
             auto& m = moves[i % moves.size()];
             char promo = (m.promotion == ' ') ? 'q' : m.promotion;
             auto undo = pos.makeMove(m.from, m.to, promo);
-            human_limit::Accumulator next;
-            human_limit::applyMoveToAccumulator(net, pos, undo, acc, &next);
+            limit::Accumulator next;
+            limit::applyMoveToAccumulator(net, pos, undo, acc, &next);
             pos.unmakeMove(undo);
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         volatile int sink = 0;
         for (int i = 0; i < iterations; i++) {
-            auto ctx = human_limit::computePerspectiveContext(board, i % 2 == 0);
+            auto ctx = limit::computePerspectiveContext(board, i % 2 == 0);
             sink += ctx.kingBucket;
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         volatile size_t sink = 0;
         for (int i = 0; i < iterations; i++) {
-            auto facts = human_limit::computeThreatFacts(board);
+            auto facts = limit::computeThreatFacts(board);
             sink += facts.size();
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         volatile size_t sink = 0;
         for (int i = 0; i < iterations; i++) {
-            auto facts = human_limit::computeThreatFactsBB(pos0);
+            auto facts = limit::computeThreatFactsBB(pos0);
             sink += facts.size();
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -204,12 +204,12 @@ int main(int argc, char** argv) {
     // 8. Full evaluateFromAccumulatorsWithThreats() -- the ACTUAL hot path used by Searcher::evalWhiteRelative.
     {
         auto& pos0 = positions[0];
-        human_limit::Accumulator acc;
-        human_limit::initAccumulator(net, pos0, &acc);
+        limit::Accumulator acc;
+        limit::initAccumulator(net, pos0, &acc);
         auto t0 = std::chrono::steady_clock::now();
         volatile double sink = 0;
         for (int i = 0; i < iterations; i++) {
-            int bucket = human_limit::outputBucketFromPieceCount(acc.pieceCount);
+            int bucket = limit::outputBucketFromPieceCount(acc.pieceCount);
             sink += net.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos0, pos0.turn(), bucket);
         }
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(

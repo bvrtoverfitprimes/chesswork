@@ -41,7 +41,7 @@ echo "[4/5] fine-tuning (pure WDL, warm-start from ${INIT_FROM}, aux x${AUX_REPE
 
 echo "[5/5] exporting to test weights ..."
 "$PY" training/model/export.py --checkpoint "training/checkpoints/${OUT_TAG}.pt" \
-  --out "engine/human_limit/nnue_${OUT_TAG}.bin"
+  --out "engine/limit/nnue_${OUT_TAG}.bin"
 
 echo "DONE. A/B before adopting:"
-echo "  $PY tools/ab_weights.py --a engine/human_limit/nnue_${OUT_TAG}.bin --b engine/human_limit/nnue_weights.bin --games 30 --ms 500"
+echo "  $PY tools/ab_weights.py --a engine/limit/nnue_${OUT_TAG}.bin --b engine/limit/nnue_weights.bin --games 30 --ms 500"

@@ -9,8 +9,8 @@
 #include "../chess/bitboard/bitboard.h"
 #include "../chess/bitboard/magic.h"
 #include "../chess/bitboard/position.h"
-#include "../engine/limit/network.h"
-#include "../engine/limit/search.h"
+#include "../engine/fusion_dev/network.h"
+#include "../engine/fusion_dev/search.h"
 
 using chess::bitboard::Position;
 
@@ -82,12 +82,16 @@ int main() {
     chess::bitboard::initAttackTables();
     chess::bitboard::initMagics();
 
-    limit::Network net;
-    const char* weightsPath = std::getenv("LIMIT_WEIGHTS");
-    net.load(weightsPath ? weightsPath : "engine/limit/nnue_weights.bin");
+    human_limit::Network net;
+    const char* rw = std::getenv("RAW_WEIGHT");
+    bool rawOnly = rw && std::atof(rw) >= 0.999;
+    if (!rawOnly) {
+        const char* weightsPath = std::getenv("LIMIT_WEIGHTS");
+        net.load(weightsPath ? weightsPath : "engine/limit/nnue_weights.bin");
+    }
 
     int numThreads = 1;
-    auto searcher = std::make_unique<limit::Searcher>(net);
+    auto searcher = std::make_unique<human_limit::Searcher>(net);
     Position pos;
 
     std::string line;
@@ -100,7 +104,7 @@ int main() {
 
         const std::string& cmd = tokens[0];
         if (cmd == "uci") {
-            std::cout << "id name limit\n";
+            std::cout << "id name human_limit\n";
             std::cout << "id author chesswork\n";
             std::cout << "option name Threads type spin default 1 min 1 max 16\n";
             std::cout << "option name Hash type spin default 128 min 1 max 4096\n";
@@ -119,7 +123,7 @@ int main() {
                 searcher->setThreads(numThreads);
             }
         } else if (cmd == "ucinewgame") {
-            searcher = std::make_unique<limit::Searcher>(net);
+            searcher = std::make_unique<human_limit::Searcher>(net);
             searcher->setThreads(numThreads);
         } else if (cmd == "position") {
             pos = buildPosition(tokens, 1);

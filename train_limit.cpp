@@ -9,13 +9,13 @@
 #include <vector>
 
 #include "chess/board.h"
-#include "engine/human_limit/network.h"
-#include "engine/human_limit/search.h"
+#include "engine/limit/network.h"
+#include "engine/limit/search.h"
 
 namespace {
 
 struct Sample {
-    human_limit::Features features;
+    limit::Features features;
 };
 
 int pieceMaterialValue(char pieceLower) {
@@ -66,7 +66,7 @@ std::string serializeFenPlacement(const std::vector<std::array<char, 8>>& board)
     return oss.str();
 }
 
-bool generateSyntheticMaterialPosition(std::mt19937& rng, human_limit::Features* featuresOut, double* targetOut) {
+bool generateSyntheticMaterialPosition(std::mt19937& rng, limit::Features* featuresOut, double* targetOut) {
     chess::Game game;
     std::uniform_real_distribution<double> uni(0.0, 1.0);
     int randomPlies = 4 + static_cast<int>(uni(rng) * 12);
@@ -129,15 +129,15 @@ bool generateSyntheticMaterialPosition(std::mt19937& rng, human_limit::Features*
     }
     if (whiteMaterial == blackMaterial) return false;
 
-    *featuresOut = human_limit::extractFeatures(synthetic);
+    *featuresOut = limit::extractFeatures(synthetic);
     *targetOut = (whiteMaterial > blackMaterial) ? 1.0 : -1.0;
     return true;
 }
 
-double playSelfPlayGame(human_limit::Network& net, int searchDepth, int searchTimeMs, int maxPlies,
+double playSelfPlayGame(limit::Network& net, int searchDepth, int searchTimeMs, int maxPlies,
                          std::mt19937& rng, std::vector<Sample>* samplesOut) {
     chess::Game game;
-    human_limit::Searcher searcher(net);
+    limit::Searcher searcher(net);
     std::vector<Sample> positions;
 
     std::uniform_real_distribution<double> uni(0.0, 1.0);
@@ -161,7 +161,7 @@ double playSelfPlayGame(human_limit::Network& net, int searchDepth, int searchTi
         }
 
         if (ply % 3 == 0) {
-            positions.push_back({human_limit::extractFeatures(game)});
+            positions.push_back({limit::extractFeatures(game)});
         }
 
         std::string chosen;
@@ -197,9 +197,9 @@ int main(int argc, char** argv) {
     size_t replayCap = argc > 8 ? static_cast<size_t>(std::atoi(argv[8])) : 20000;
     int syntheticPerGen = argc > 9 ? std::atoi(argv[9]) : 20;
 
-    const std::string weightsPath = "engine/human_limit/weights.txt";
+    const std::string weightsPath = "engine/limit/weights.txt";
 
-    human_limit::Network net;
+    limit::Network net;
     if (net.load(weightsPath)) {
         std::cout << "Loaded existing weights from " << weightsPath << "\n";
     } else {
@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
     }
 
     std::mt19937 rng(std::random_device{}());
-    std::vector<std::pair<human_limit::Features, double>> replayBuffer;
+    std::vector<std::pair<limit::Features, double>> replayBuffer;
 
     for (int gen = 1; gen <= generations; gen++) {
         auto genStart = std::chrono::steady_clock::now();
@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
 
         size_t syntheticGenerated = 0;
         for (int s = 0; s < syntheticPerGen; s++) {
-            human_limit::Features f;
+            limit::Features f;
             double target;
             if (generateSyntheticMaterialPosition(rng, &f, &target)) {
                 replayBuffer.push_back({f, target});

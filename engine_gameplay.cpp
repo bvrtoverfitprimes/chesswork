@@ -5,14 +5,14 @@
 #include "chess/bitboard/magic.h"
 #include "chess/bitboard/position.h"
 #include "chess/board.h"
-#include "engine/human_limit/network.h"
-#include "engine/human_limit/search.h"
+#include "engine/limit/network.h"
+#include "engine/limit/search.h"
 
 namespace {
 
 constexpr int kSearchDepth = 64;
 constexpr int kSearchTimeMs = 2000;
-constexpr const char* kWeightsPath = "engine/human_limit/nnue_weights.bin";
+constexpr const char* kWeightsPath = "engine/limit/nnue_weights.bin";
 
 bool isGameOver(chess::Game& game) {
     if (game.isFiftyMoveDraw()) {
@@ -51,12 +51,12 @@ int main() {
                                    ? chess::Color::Black
                                    : chess::Color::White;
 
-    human_limit::Network net;
+    limit::Network net;
     if (!net.load(kWeightsPath)) {
         std::cout << "Warning: no trained weights found at " << kWeightsPath
                   << ", playing with an untrained network.\n";
     }
-    human_limit::Searcher searcher(net);
+    limit::Searcher searcher(net);
 
     chess::Game game;
     game.printBoard();

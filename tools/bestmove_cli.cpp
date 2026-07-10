@@ -7,8 +7,8 @@
 #include "../chess/board.h"
 #include "../engine/ancient_engine/search.h"
 #include "../engine/old_engine/search.h"
-#include "../engine/human_limit/network.h"
-#include "../engine/human_limit/search.h"
+#include "../engine/limit/network.h"
+#include "../engine/limit/search.h"
 
 int main(int argc, char** argv) {
     if (argc < 4) {
@@ -36,11 +36,11 @@ int main(int argc, char** argv) {
             return true;
         }();
         (void)magicsInit;
-        static human_limit::Network net;
-        static bool loaded = net.load("engine/human_limit/nnue_weights.bin");
+        static limit::Network net;
+        static bool loaded = net.load("engine/limit/nnue_weights.bin");
         (void)loaded;
         chess::bitboard::Position pos(argv[2]);
-        human_limit::Searcher searcher(net);
+        limit::Searcher searcher(net);
         auto r = searcher.findBestMove(pos, 64, timeMs);
         std::cout << r.uci << std::endl;
     } else {

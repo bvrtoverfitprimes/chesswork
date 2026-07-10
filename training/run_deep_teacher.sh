@@ -44,7 +44,7 @@ echo "[3/4] training pure-WDL, warm-started from current best ..."
 echo "[4/4] exporting to a test weights file (A/B before adopting) ..."
 "$PY" training/model/export.py \
   --checkpoint "training/checkpoints/${TAG}_model.pt" \
-  --out "engine/human_limit/nnue_${TAG}.bin"
+  --out "engine/limit/nnue_${TAG}.bin"
 
 echo "DONE. A/B it before adopting:"
-echo "  $PY tools/ab_weights.py --a engine/human_limit/nnue_${TAG}.bin --b engine/human_limit/nnue_weights.bin --games 30 --ms 800"
+echo "  $PY tools/ab_weights.py --a engine/limit/nnue_${TAG}.bin --b engine/limit/nnue_weights.bin --games 30 --ms 800"

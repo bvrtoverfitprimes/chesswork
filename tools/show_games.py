@@ -20,8 +20,8 @@ def our_move(board, time_ms):
 def play_vs_old_engine(our_is_white, time_ms, max_plies):
     board = chess.Board()
     game = chess.pgn.Game()
-    game.headers["White"] = "human_limit" if our_is_white else "old_engine"
-    game.headers["Black"] = "old_engine" if our_is_white else "human_limit"
+    game.headers["White"] = "limit" if our_is_white else "old_engine"
+    game.headers["Black"] = "old_engine" if our_is_white else "limit"
     node = game
     for _ in range(max_plies):
         if board.is_game_over(claim_draw=True):
@@ -43,8 +43,8 @@ def play_vs_stockfish(our_is_white, elo, time_ms, max_plies):
     sf.configure({"UCI_LimitStrength": True, "UCI_Elo": elo, "Threads": 1})
     board = chess.Board()
     game = chess.pgn.Game()
-    game.headers["White"] = "human_limit" if our_is_white else f"stockfish(elo={elo})"
-    game.headers["Black"] = f"stockfish(elo={elo})" if our_is_white else "human_limit"
+    game.headers["White"] = "limit" if our_is_white else f"stockfish(elo={elo})"
+    game.headers["Black"] = f"stockfish(elo={elo})" if our_is_white else "limit"
     node = game
     for _ in range(max_plies):
         if board.is_game_over(claim_draw=True):

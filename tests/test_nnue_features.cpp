@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "../chess/board.h"
-#include "../engine/human_limit/nnue_features.h"
+#include "../engine/limit/nnue_features.h"
 
 namespace {
 
@@ -54,8 +54,8 @@ int main() {
         int expectedBucket = std::stoi(line.substr(p3 + 1));
 
         chess::Game game(fen);
-        auto features = human_limit::extractNnueFeatures(game.boardArray(), game.turn());
-        int actualBucket = human_limit::computeOutputBucket(game.boardArray());
+        auto features = limit::extractNnueFeatures(game.boardArray(), game.turn());
+        int actualBucket = limit::computeOutputBucket(game.boardArray());
 
         std::vector<int> actualStm = features.stm;
         std::vector<int> actualNtm = features.ntm;

@@ -10,15 +10,15 @@
 #include "chess/bitboard/magic.h"
 #include "chess/bitboard/position.h"
 #include "chess/board.h"
-#include "engine/human_limit/network.h"
-#include "engine/human_limit/search.h"
+#include "engine/limit/network.h"
+#include "engine/limit/search.h"
 
 namespace {
 
 constexpr int kSearchDepth = 64;
 constexpr int kSearchTimeMs = 1000;
 constexpr int kMaxPlies = 300;
-constexpr const char* kWeightsPath = "engine/human_limit/nnue_weights.bin";
+constexpr const char* kWeightsPath = "engine/limit/nnue_weights.bin";
 
 char pieceLetter(char pieceLower) {
     switch (pieceLower) {
@@ -114,12 +114,12 @@ int main() {
     chess::bitboard::initAttackTables();
     chess::bitboard::initMagics();
 
-    human_limit::Network net;
+    limit::Network net;
     if (!net.load(kWeightsPath)) {
         std::cout << "Warning: no trained weights found at " << kWeightsPath
                   << ", playing with an untrained network.\n";
     }
-    human_limit::Searcher searcher(net);
+    limit::Searcher searcher(net);
 
     chess::Game game;
     std::vector<std::string> sanMoves;

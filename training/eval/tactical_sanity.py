@@ -53,7 +53,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-cli", default=os.path.join(REPO_ROOT, "tools", "eval_cli.exe"))
     parser.add_argument("--bestmove-cli", default=os.path.join(REPO_ROOT, "tools", "bestmove_cli.exe"))
-    parser.add_argument("--weights", default=os.path.join(REPO_ROOT, "engine", "human_limit", "nnue_weights.bin"))
+    parser.add_argument("--weights", default=os.path.join(REPO_ROOT, "engine", "limit", "nnue_weights.bin"))
     parser.add_argument("--time-ms", type=int, default=500)
     args = parser.parse_args()
 

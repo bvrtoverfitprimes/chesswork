@@ -8,7 +8,7 @@
 #include <memory>
 #include <thread>
 
-namespace human_limit {
+namespace limit {
 
 namespace {
 
@@ -156,9 +156,15 @@ void Searcher::updateCorrectionHistory(Position& pos, int depth, int staticEval,
 }
 
 int Searcher::evalWhiteRelative(Position& pos) {
+    uint64_t key = pos.zobristHash();
+    size_t slot = key & (kEvalCacheSize - 1);
+    if (evalCacheKeys_[slot] == key) return evalCacheVals_[slot];
     const Accumulator& acc = accStack_[accTop_];
     int bucket = outputBucketFromPieceCount(acc.pieceCount);
-    return static_cast<int>(net_.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos, pos.turn(), bucket));
+    int v = static_cast<int>(net_.evaluateFromAccumulatorsWithThreats(acc.white, acc.black, pos, pos.turn(), bucket));
+    evalCacheKeys_[slot] = key;
+    evalCacheVals_[slot] = v;
+    return v;
 }
 
 void Searcher::pushMove(Position& pos, const chess::bitboard::BBUndo& undo) {
@@ -208,16 +214,19 @@ std::vector<BBMove> Searcher::orderMoves(Position& pos, const std::vector<BBMove
         return score;
     };
 
-    std::vector<std::pair<int, BBMove>> scored;
-    scored.reserve(moves.size());
-    for (const auto& m : moves) scored.push_back({scoreOf(m), m});
+    struct Entry { int score; int origIdx; BBMove move; };
+    Entry scored[kMaxMoves];
+    int n = static_cast<int>(moves.size() < kMaxMoves ? moves.size() : kMaxMoves);
+    for (int i = 0; i < n; i++) scored[i] = {scoreOf(moves[i]), i, moves[i]};
 
-    std::stable_sort(scored.begin(), scored.end(),
-                      [](const auto& a, const auto& b) { return a.first > b.first; });
+    // sort with index tiebreak == stable_sort, but no heap allocation
+    std::sort(scored, scored + n, [](const Entry& a, const Entry& b) {
+        return a.score != b.score ? a.score > b.score : a.origIdx < b.origIdx;
+    });
 
     std::vector<BBMove> ordered;
-    ordered.reserve(scored.size());
-    for (auto& [score, m] : scored) ordered.push_back(m);
+    ordered.reserve(n);
+    for (int i = 0; i < n; i++) ordered.push_back(scored[i].move);
     return ordered;
 }
 
@@ -239,7 +248,7 @@ int Searcher::quiescence(Position& pos, int ply, int alpha, int beta) {
     }
 
     auto moves = pos.getValidMoves();
-    if (inCheck && moves.empty()) return -(kMateScore - ply);
+    if (moves.empty()) return inCheck ? -(kMateScore - ply) : 0;
 
     std::vector<BBMove> candidates;
     if (inCheck) {
@@ -330,11 +339,6 @@ int Searcher::negamax(Position& pos, int depth, int ply, int alpha, int beta, bo
     if (!isExcludedSearch && depth >= kIirMinDepth && ttMove == kNoMove) depth--;
 
     bool inCheck = pos.inCheck();
-    auto moves = pos.getValidMoves();
-    if (moves.empty()) {
-        if (inCheck) return -(kMateScore - ply);
-        return 0;
-    }
 
     if (depth <= 0) {
         return quiescence(pos, ply, alpha, beta);
@@ -393,6 +397,9 @@ int Searcher::negamax(Position& pos, int depth, int ply, int alpha, int beta, bo
         }
     }
 
+    auto moves = pos.getValidMoves();
+    if (moves.empty()) return inCheck ? -(kMateScore - ply) : 0;
+
     auto ordered = orderMoves(pos, moves, ply, ttMove);
 
     if (!isExcludedSearch && !inCheck && ply > 0 && depth >= kProbCutMinDepth && !nearMate) {
@@ -444,6 +451,7 @@ int Searcher::negamax(Position& pos, int depth, int ply, int alpha, int beta, bo
         }
 
         auto undo = pos.makeMove(m.from, m.to, promo);
+        __builtin_prefetch(&tt_[pos.zobristHash() & (kTTSize - 1)]);
         pushMove(pos, undo);
         bool givesCheck = pos.inCheck();
         if (givesCheck && !losingCapture) extension = std::max(extension, 1);
@@ -670,7 +678,7 @@ SearchResult Searcher::searchInternal(Position& pos, int maxDepth, int timeMs, b
         result.depthReached = depth;
         prevScore = bestScoreThisDepth;
 
-        static const bool verboseEnv = std::getenv("HL_VERBOSE") != nullptr;
+        static const bool verboseEnv = std::getenv("LIMIT_VERBOSE") != nullptr;
         if (verboseEnv && reportVerbose) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - startTime_).count();

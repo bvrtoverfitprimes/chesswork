@@ -41,7 +41,7 @@ def export(checkpoint_path, out_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default="training/checkpoints/m2.pt")
-    parser.add_argument("--out", default="engine/human_limit/nnue_weights.bin")
+    parser.add_argument("--out", default="engine/limit/nnue_weights.bin")
     args = parser.parse_args()
     export(args.checkpoint, args.out)
 

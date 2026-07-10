@@ -55,6 +55,7 @@ private:
 
     static constexpr size_t kTTSize = SharedTT::kTTSize;
     static constexpr int kMaxPly = 128;
+    static constexpr int kMaxMoves = 256;
     static constexpr int kMaxAccDepth = 512;
 
     std::shared_ptr<SharedTT> ttShared_;
@@ -89,6 +90,20 @@ private:
     static constexpr size_t kCorrHistSize = 1u << kCorrHistBits;
     static constexpr int kCorrHistLimit = 1024;
     int corrHist_[2][kCorrHistSize] = {};
+
+    // Eval cache (per-searcher, zobrist-keyed). §26's revert was about the
+    // noisy fusion oracle, not the cache mechanism.
+    static constexpr int kEvalCacheBits = 20;
+    static constexpr size_t kEvalCacheSize = 1u << kEvalCacheBits;
+    std::vector<uint64_t> evalCacheKeys_ = std::vector<uint64_t>(kEvalCacheSize, ~0ULL);
+    std::vector<int32_t> evalCacheVals_ = std::vector<int32_t>(kEvalCacheSize, 0);
+
+    // fusion: RAW_WEIGHT in [0,1] blends classical eval; AGREE_GATE (cp) skips
+    // margin-based pruning when |nnue - raw| exceeds it (0 = off)
+    double rawWeight_ = 0.0;
+    int agreeGate_ = 0;
+    int nodeDisagree_ = 0;
+    bool trustEval() const { return agreeGate_ <= 0 || nodeDisagree_ <= agreeGate_; }
 
     size_t correctionKey(const chess::bitboard::Position& pos) const;
     int correctedStaticEval(chess::bitboard::Position& pos);

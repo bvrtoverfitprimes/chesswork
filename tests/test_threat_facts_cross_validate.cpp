@@ -7,7 +7,7 @@
 #include "../chess/bitboard/bitboard.h"
 #include "../chess/bitboard/magic.h"
 #include "../chess/bitboard/position.h"
-#include "../engine/human_limit/nnue_features.h"
+#include "../engine/limit/nnue_features.h"
 
 namespace {
 
@@ -21,7 +21,7 @@ void check(bool cond, const std::string& label) {
     }
 }
 
-bool factLess(const human_limit::ThreatFact& a, const human_limit::ThreatFact& b) {
+bool factLess(const limit::ThreatFact& a, const limit::ThreatFact& b) {
     if (a.attackerIsWhite != b.attackerIsWhite) return a.attackerIsWhite < b.attackerIsWhite;
     if (a.attackerType != b.attackerType) return a.attackerType < b.attackerType;
     return a.victimType < b.victimType;
@@ -29,8 +29,8 @@ bool factLess(const human_limit::ThreatFact& a, const human_limit::ThreatFact& b
 
 void checkPosition(const chess::bitboard::Position& pos, const std::string& label) {
     auto board = pos.toBoardArray();
-    auto slow = human_limit::computeThreatFacts(board);
-    auto fast = human_limit::computeThreatFactsBB(pos);
+    auto slow = limit::computeThreatFacts(board);
+    auto fast = limit::computeThreatFactsBB(pos);
 
     std::sort(slow.begin(), slow.end(), factLess);
     std::sort(fast.begin(), fast.end(), factLess);
@@ -49,8 +49,8 @@ void checkPosition(const chess::bitboard::Position& pos, const std::string& labe
     check(same, label + " threats (slow=" + std::to_string(slow.size()) + " fast=" + std::to_string(fast.size()) + ")");
 
     for (bool perspIsWhite : {true, false}) {
-        auto slowCtx = human_limit::computePerspectiveContext(board, perspIsWhite);
-        auto fastCtx = human_limit::computePerspectiveContextBB(pos, perspIsWhite);
+        auto slowCtx = limit::computePerspectiveContext(board, perspIsWhite);
+        auto fastCtx = limit::computePerspectiveContextBB(pos, perspIsWhite);
         bool ctxSame = slowCtx.perspIsWhite == fastCtx.perspIsWhite && slowCtx.mirror == fastCtx.mirror &&
                        slowCtx.kingBucket == fastCtx.kingBucket;
         check(ctxSame, label + " perspectiveContext persp=" + std::to_string(perspIsWhite));
